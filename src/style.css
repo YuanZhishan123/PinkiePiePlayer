@@ -1,0 +1,622 @@
+/* ============ 基础 ============ */
+:root {
+  --bg: #0b0d12;
+  --surface: rgba(16, 19, 27, 0.82);
+  --surface-border: rgba(255, 255, 255, 0.07);
+  --text: #e8ebf1;
+  --text-dim: rgba(232, 235, 241, 0.55);
+  --accent: #5b9dff;
+  --accent2: #818cf8;
+  --accent-grad: linear-gradient(90deg, #5b9dff, #818cf8);
+  --radius: 16px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Segoe UI Variable Display", "Segoe UI", "Microsoft YaHei UI",
+    "PingFang SC", "Harmonious Sans SC", system-ui, sans-serif;
+  font-size: 14px;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+button {
+  all: unset;
+  color: var(--text);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+button svg { width: 22px; height: 22px; display: block; }
+
+.hidden { display: none !important; }
+
+#app { position: relative; height: 100vh; background: var(--bg); }
+
+/* ============ 视频舞台 ============ */
+#stage {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: #000;
+}
+
+#video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain; /* 默认适应窗口;可在控制栏切换为铺满 */
+  background: #000;
+}
+
+/* 空状态 */
+#empty-state {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  background:
+    radial-gradient(1200px 700px at 50% 38%, rgba(91, 157, 255, 0.08), transparent 60%),
+    radial-gradient(900px 500px at 70% 70%, rgba(129, 140, 248, 0.06), transparent 60%),
+    var(--bg);
+}
+
+#btn-open {
+  flex-direction: row;
+  gap: 10px;
+  padding: 14px 34px;
+  font-size: 16px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--accent-grad);
+  border-radius: 999px;
+  box-shadow: 0 10px 34px rgba(91, 157, 255, 0.35);
+  transition: transform 0.18s ease, box-shadow 0.18s ease;
+}
+
+#btn-open svg { width: 20px; height: 20px; }
+
+#btn-open:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 14px 44px rgba(91, 157, 255, 0.5);
+}
+
+#empty-state .hint { color: var(--text-dim); margin: 0; }
+#empty-state .keys { color: rgba(232, 235, 241, 0.34); font-size: 12px; margin: 6px 0 0; }
+
+/* 长按倍速角标 */
+#speed-badge {
+  position: absolute;
+  top: 64px;
+  right: 26px;
+  padding: 8px 18px;
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: #fff;
+  background: rgba(10, 12, 18, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  backdrop-filter: blur(14px);
+  opacity: 0;
+  transform: translateY(-6px) scale(0.95);
+  transition: opacity 0.15s ease, transform 0.15s ease;
+  pointer-events: none;
+}
+
+#speed-badge.show { opacity: 1; transform: translateY(0) scale(1); }
+
+/* 拖拽遮罩 */
+#drag-overlay {
+  position: absolute;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(8, 10, 15, 0.55);
+  backdrop-filter: blur(6px);
+  z-index: 60;
+}
+
+#app.drag-over #drag-overlay { display: flex; }
+
+.drag-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 18px 34px;
+  font-size: 17px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--surface);
+  border: 1.5px dashed rgba(91, 157, 255, 0.65);
+  border-radius: var(--radius);
+}
+
+.drag-card svg { width: 26px; height: 26px; color: var(--accent); }
+
+/* ====== 顶部/底部渐变(YouTube 风格,浅色画面下保证 UI 可读) ====== */
+/* 无 z-index:靠 DOM 顺序垫在空状态之下、盖在视频之上 */
+#shade-top,
+#shade-bottom {
+  position: absolute;
+  left: 0;
+  right: 0;
+  pointer-events: none;
+  transition: opacity 0.28s ease;
+}
+
+#shade-top {
+  top: 0;
+  height: 120px;
+  background: linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, 0.5),
+    rgba(0, 0, 0, 0.22) 48%,
+    rgba(0, 0, 0, 0)
+  );
+}
+
+#shade-bottom {
+  bottom: 0;
+  height: 170px;
+  background: linear-gradient(
+    to top,
+    rgba(0, 0, 0, 0.55),
+    rgba(0, 0, 0, 0.25) 45%,
+    rgba(0, 0, 0, 0)
+  );
+}
+
+/* UI 隐藏时渐变同步淡出 */
+#app.ui-idle #shade-top,
+#app.ui-idle #shade-bottom { opacity: 0; }
+
+/* ============ 顶部标题栏 ============ */
+#titlebar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 44px;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 0 0 16px;
+  background: none;
+  pointer-events: none; /* 透传点击:视频画面可点击/拖动 */
+}
+
+#title-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: rgba(232, 235, 241, 0.88);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding-right: 12px;
+}
+
+.win-buttons {
+  display: flex;
+  height: 100%;
+  pointer-events: auto;
+}
+
+.win-buttons button {
+  width: 46px;
+  height: 100%;
+  color: rgba(232, 235, 241, 0.75);
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.win-buttons button svg { width: 16px; height: 16px; }
+
+.win-buttons button:hover { background: rgba(255, 255, 255, 0.09); color: #fff; }
+
+#btn-close:hover { background: #e81123; color: #fff; }
+
+/* ============ 底部控制栏(无框悬浮,以视频为背景) ============ */
+#controls {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 40;
+  padding: 14px 18px 8px;
+  background: none;
+  pointer-events: none; /* 空白区域透传点击,子元素恢复交互 */
+}
+
+#progress-area,
+#button-bar {
+  pointer-events: auto;
+}
+
+/* 空状态时隐藏控制栏(无视频可控制) */
+#app:has(#empty-state:not(.hidden)) #controls { display: none; }
+
+/* ---- 进度条区域 ---- */
+#progress-area {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 2px 10px;
+}
+
+.time {
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+  min-width: 46px;
+}
+
+#time-total { text-align: right; }
+
+#progress-track {
+  position: relative;
+  flex: 1;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  touch-action: none;
+}
+
+#progress-track::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.14);
+  transition: height 0.15s ease;
+}
+
+#progress-track:hover::before { height: 6px; }
+
+#progress-buffered {
+  position: absolute;
+  left: 0;
+  height: 4px;
+  width: 0;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.22);
+  transition: height 0.15s ease;
+}
+
+#progress-track:hover #progress-buffered { height: 6px; }
+
+#progress-played {
+  position: absolute;
+  left: 0;
+  height: 4px;
+  width: 0;
+  border-radius: 2px;
+  background: var(--accent-grad);
+  transition: height 0.15s ease;
+  pointer-events: none;
+}
+
+#progress-track:hover #progress-played { height: 6px; }
+
+#progress-dot {
+  position: absolute;
+  left: 0;
+  width: 12px;
+  height: 12px;
+  margin-left: -6px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.5);
+  transform: scale(1);
+  transition: transform 0.15s ease;
+  pointer-events: none;
+}
+
+#progress-track:hover #progress-dot { transform: scale(1.18); }
+
+#progress-tip {
+  position: absolute;
+  bottom: 22px;
+  left: 0;
+  transform: translateX(-50%);
+  padding: 4px 9px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: #fff;
+  background: rgba(8, 10, 15, 0.85);
+  border-radius: 8px;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+#progress-tip.show { opacity: 1; }
+
+/* ---- 按钮行 ---- */
+#button-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+#button-bar > button,
+#speed-control > button,
+#volume-control > button {
+  width: 40px;
+  height: 36px;
+  border-radius: 9px;
+  color: rgba(232, 235, 241, 0.85);
+  transition: background 0.13s ease, color 0.13s ease, transform 0.13s ease;
+}
+
+#button-bar > button:hover,
+#speed-control > button:hover,
+#volume-control > button:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+#button-bar > button:active,
+#speed-control > button:active,
+#volume-control > button:active {
+  transform: scale(0.94);
+}
+
+#button-bar > button.active { color: var(--accent); }
+
+/* ---- 倍速 ---- */
+#speed-control { position: relative; }
+
+#btn-speed span {
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  padding: 0 2px;
+}
+
+#speed-menu {
+  position: absolute;
+  bottom: 46px;
+  left: 50%;
+  transform: translateX(-50%) translateY(6px) scale(0.97);
+  min-width: 108px;
+  padding: 8px;
+  background: var(--surface);
+  border: 1px solid var(--surface-border);
+  border-radius: 13px;
+  backdrop-filter: blur(26px) saturate(1.5);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.15s ease, transform 0.15s ease, visibility 0.15s;
+  z-index: 50;
+}
+
+#speed-menu.open {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(-50%) translateY(0) scale(1);
+}
+
+.menu-title {
+  padding: 4px 10px 6px;
+  font-size: 11px;
+  color: var(--text-dim);
+  letter-spacing: 0.5px;
+}
+
+.menu-item {
+  padding: 7px 12px;
+  border-radius: 8px;
+  font-size: 13.5px;
+  text-align: center;
+  color: rgba(232, 235, 241, 0.88);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.menu-item:hover { background: rgba(255, 255, 255, 0.09); color: #fff; }
+
+.menu-item.active {
+  color: #fff;
+  background: var(--accent-grad);
+  font-weight: 600;
+}
+
+/* ---- 音量(向上弹出的竖直滑块) ---- */
+#volume-control {
+  position: relative;
+}
+
+#volume-popup {
+  position: absolute;
+  bottom: 40px;
+  left: 50%;
+  transform: translateX(-50%) translateY(6px);
+  width: 44px;
+  height: 150px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 0 12px;
+  background: rgba(13, 16, 23, 0.92);
+  border: 1px solid var(--surface-border);
+  border-radius: 12px;
+  backdrop-filter: blur(22px) saturate(1.4);
+  box-shadow: 0 10px 34px rgba(0, 0, 0, 0.5);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.16s ease, transform 0.16s ease, visibility 0.16s;
+  z-index: 60;
+}
+
+/* 悬停桥接:鼠标从按钮移向弹窗时不断开 hover */
+#volume-popup::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  height: 10px;
+}
+
+#volume-control:hover #volume-popup,
+#volume-control.flash #volume-popup {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(-50%) translateY(0);
+}
+
+#volume-num {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+#volume-slider-wrap {
+  position: relative;
+  flex: 1;
+  width: 100%;
+}
+
+#volume-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  position: absolute;
+  width: 108px; /* 竖直长度:旋转后即为滑轨高度 */
+  left: 50%;
+  top: 50%;
+  margin: 0;
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(
+    to right,
+    var(--accent) var(--fill, 80%),
+    rgba(255, 255, 255, 0.16) var(--fill, 80%)
+  );
+  outline: none;
+  cursor: pointer;
+  transform: translate(-50%, -50%) rotate(-90deg);
+}
+
+#volume-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+  cursor: pointer;
+}
+
+#volume-slider::-webkit-slider-thumb:hover { transform: scale(1.15); }
+
+/* 音量图标状态:低音量只显示一道弧,静音显示 × */
+#btn-volume .wave { transition: opacity 0.12s ease; }
+
+#btn-volume.low .wave {
+  opacity: 0.35;
+}
+
+#btn-volume.muted .wave { opacity: 0; }
+
+#btn-volume.muted::after {
+  content: "";
+  position: absolute;
+  width: 15px;
+  height: 15px;
+  background: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M15.5 9.5l5 5m0-5l-5 5' stroke='black' stroke-width='2' stroke-linecap='round' fill='none'/%3E%3C/svg%3E") center/contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M15.5 9.5l5 5m0-5l-5 5' stroke='black' stroke-width='2' stroke-linecap='round' fill='none'/%3E%3C/svg%3E") center/contain no-repeat;
+}
+
+/* ---- 全屏图标切换 ---- */
+#btn-fullscreen .ic-exit { display: none; }
+#btn-fullscreen.active .ic-enter { display: none; }
+#btn-fullscreen.active .ic-exit { display: block; }
+
+/* ---- 画面填充模式图标切换 ---- */
+#btn-fit .ic-cover { display: none; }
+#btn-fit.cover .ic-contain { display: none; }
+#btn-fit.cover .ic-cover { display: block; }
+
+/* 右侧按钮组:字幕起向右对齐 */
+#btn-subtitle { margin-left: auto; }
+
+/* ============ Toast ============ */
+#toast {
+  position: absolute;
+  left: 50%;
+  bottom: 128px;
+  transform: translateX(-50%) translateY(8px);
+  padding: 9px 20px;
+  font-size: 13.5px;
+  color: #fff;
+  background: rgba(8, 10, 15, 0.82);
+  border: 1px solid var(--surface-border);
+  border-radius: 10px;
+  backdrop-filter: blur(18px);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.18s ease, transform 0.18s ease, visibility 0.18s;
+  pointer-events: none;
+  z-index: 55;
+  white-space: nowrap;
+}
+
+#toast.show {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(-50%) translateY(0);
+}
+
+/* ============ UI 自动显隐 ============ */
+#titlebar,
+#controls {
+  will-change: transform, opacity;
+}
+
+#titlebar {
+  transition: opacity 0.28s ease, transform 0.28s ease;
+}
+
+#controls {
+  transition: opacity 0.28s ease, transform 0.28s ease;
+}
+
+#app.ui-idle #titlebar {
+  opacity: 0;
+  transform: translateY(-8px);
+  pointer-events: none;
+}
+
+#app.ui-idle #controls {
+  opacity: 0;
+  transform: translateY(10px);
+  pointer-events: none;
+}
+
+#app.ui-idle #stage { cursor: none; }
+
+/* 空状态时 UI 常显 */
+#app:has(#empty-state:not(.hidden)) #titlebar,
+#app:has(#empty-state:not(.hidden)) #controls { opacity: 1; transform: none; pointer-events: auto; }

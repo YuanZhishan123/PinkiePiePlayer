@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PinkiePiePlayer</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <!-- 顶部标题栏(浮层,鼠标静止时隐藏) -->
+      <header id="titlebar">
+        <div id="title-text">PinkiePiePlayer</div>
+        <div class="win-buttons">
+          <button id="btn-minimize" title="最小化">
+            <svg viewBox="0 0 24 24"><path d="M6 12h12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+          </button>
+          <button id="btn-close" title="关闭">
+            <svg viewBox="0 0 24 24"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+          </button>
+        </div>
+      </header>
+
+      <!-- 视频舞台 -->
+      <div id="stage">
+        <video id="video"></video>
+
+        <!-- 顶部/底部黑色渐变(浅色画面下保证 UI 可读,随 UI 同步淡出) -->
+        <div id="shade-top" aria-hidden="true"></div>
+        <div id="shade-bottom" aria-hidden="true"></div>
+
+        <!-- 长按倍速角标 -->
+        <div id="speed-badge">3.0x</div>
+
+        <!-- 空状态 -->
+        <div id="empty-state">
+          <button id="btn-open" title="打开视频文件">
+            <svg viewBox="0 0 24 24"><path d="M8 5.2v13.6L19 12z" fill="currentColor"/></svg>
+            <span>打开视频</span>
+          </button>
+          <p class="hint">或将视频文件拖入窗口 · 同目录视频自动生成播放列表</p>
+          <p class="keys">空格 播放/暂停 · ↑↓ 音量 · 长按→ 三倍速 · F 全屏 · 按住画面拖动窗口</p>
+        </div>
+
+        <!-- 拖拽悬停遮罩 -->
+        <div id="drag-overlay">
+          <div class="drag-card">
+            <svg viewBox="0 0 24 24"><path d="M8 5.2v13.6L19 12z" fill="currentColor"/></svg>
+            <span>松开以播放</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 底部控制栏(悬浮于视频之上,鼠标静止时隐藏) -->
+      <footer id="controls">
+        <!-- 进度条 -->
+        <div id="progress-area">
+          <span id="time-current" class="time">00:00</span>
+          <div id="progress-track" title="进度条">
+            <div id="progress-buffered"></div>
+            <div id="progress-played"></div>
+            <div id="progress-dot"></div>
+            <div id="progress-tip">00:00</div>
+          </div>
+          <span id="time-total" class="time">00:00</span>
+        </div>
+
+        <!-- 控制按钮行 -->
+        <div id="button-bar">
+          <button id="btn-play" title="播放/暂停(空格)">
+            <svg viewBox="0 0 24 24"><path d="M8 5.2v13.6L19 12z" fill="currentColor"/></svg>
+          </button>
+          <button id="btn-prev" title="上一个视频">
+            <svg viewBox="0 0 24 24"><path d="M6.5 5h2.2v14H6.5zM19 5.6v12.8L10 12z" fill="currentColor"/></svg>
+          </button>
+          <button id="btn-next" title="下一个视频">
+            <svg viewBox="0 0 24 24"><path d="M15.3 5h2.2v14h-2.2zM5 5.6v12.8L14 12z" fill="currentColor"/></svg>
+          </button>
+
+          <button id="btn-subtitle" title="字幕(开发中)">
+            <svg viewBox="0 0 24 24">
+              <rect x="3" y="5" width="18" height="14" rx="3.5" fill="none" stroke="currentColor" stroke-width="1.7"/>
+              <path d="M7.5 11.6a2.6 2.6 0 010 .8M10.1 10.2a4.4 4.4 0 010 3.6M13.8 11.6a2.6 2.6 0 010 .8M16.4 10.2a4.4 4.4 0 010 3.6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+            </svg>
+          </button>
+
+          <!-- 倍速 -->
+          <div id="speed-control">
+            <button id="btn-speed" title="播放倍速"><span>1.0x</span></button>
+            <div id="speed-menu">
+              <div class="menu-title">倍速</div>
+              <div class="menu-items"></div>
+            </div>
+          </div>
+
+          <!-- 音量 -->
+          <div id="volume-control" title="音量">
+            <div id="volume-popup">
+              <span id="volume-num">80</span>
+              <div id="volume-slider-wrap">
+                <input type="range" id="volume-slider" min="0" max="100" step="1" />
+              </div>
+            </div>
+            <button id="btn-volume">
+              <svg viewBox="0 0 24 24">
+                <path d="M11 5.5L6.8 9H3.6v6h3.2L11 18.5z" fill="currentColor"/>
+                <path class="wave" d="M14.8 9.2a4.2 4.2 0 010 5.6M17.4 7a7.6 7.6 0 010 10" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+              </svg>
+            </button>
+          </div>
+
+          <button id="btn-fit" title="画面填充">
+            <svg class="ic-contain" viewBox="0 0 24 24"><rect x="3.5" y="5.5" width="17" height="13" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.7"/><rect x="8" y="9.4" width="8" height="5.2" rx="1.2" fill="currentColor"/></svg>
+            <svg class="ic-cover" viewBox="0 0 24 24"><rect x="6" y="8" width="12" height="8" rx="1.5" fill="currentColor"/><path d="M4 4.8h3.2M4 4.8v3.2M20 4.8h-3.2M20 4.8v3.2M4 19.2h3.2M4 19.2V16M20 19.2h-3.2M20 19.2V16" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" fill="none"/></svg>
+          </button>
+          <button id="btn-fullscreen" title="全屏(F)">
+            <svg class="ic-enter" viewBox="0 0 24 24"><path d="M4 9V6a2 2 0 012-2h3M20 9V6a2 2 0 00-2-2h-3M4 15v3a2 2 0 002 2h3M20 15v3a2 2 0 01-2 2h-3" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <svg class="ic-exit" viewBox="0 0 24 24"><path d="M9 4v3a2 2 0 01-2 2H4M15 4v3a2 2 0 002 2h3M9 20v-3a2 2 0 00-2-2H4M15 20v-3a2 2 0 012-2h3" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <button id="btn-playlist" title="播放列表">
+            <svg viewBox="0 0 24 24">
+              <path d="M4 6.5h11M4 12h11M4 17.5h7" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/>
+              <path d="M16.5 13.2v7l5.4-3.5z" fill="currentColor"/>
+            </svg>
+          </button>
+        </div>
+      </footer>
+
+      <!-- 提示气泡 -->
+      <div id="toast"></div>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

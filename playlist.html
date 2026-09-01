@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>播放列表</title>
+    <link rel="stylesheet" href="/src/playlist.css" />
+  </head>
+  <body>
+    <div id="pl">
+      <header class="pl-header">
+        <span class="pl-title">播放列表 <em id="pl-count"></em></span>
+        <button id="pl-close" title="关闭播放列表">
+          <svg viewBox="0 0 24 24"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        </button>
+      </header>
+      <ul id="pl-list"></ul>
+      <div id="pl-empty" class="hidden">本目录没有其他视频</div>
+    </div>
+    <script type="module" src="/src/playlist.js"></script>
+  </body>
+</html>

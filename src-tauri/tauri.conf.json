@@ -1,0 +1,84 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "PinkiePiePlayer",
+  "version": "0.1.0",
+  "identifier": "com.pinkiepie.player",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:5173",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "PinkiePiePlayer",
+        "label": "main",
+        "width": 1280,
+        "height": 720,
+        "minWidth": 480,
+        "minHeight": 320,
+        "decorations": false,
+        "resizable": true,
+        "center": true,
+        "dragDropEnabled": true,
+        "shadow": false,
+        "transparent": false
+      },
+      {
+        "title": "播放列表",
+        "label": "playlist",
+        "url": "playlist.html",
+        "width": 300,
+        "height": 720,
+        "decorations": false,
+        "resizable": false,
+        "visible": false,
+        "skipTaskbar": true,
+        "shadow": false,
+        "focus": false,
+        "transparent": true,
+        "x": 2000,
+        "y": 200
+      }
+    ],
+    "security": {
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["**"]
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": [
+      "icons/icon.ico",
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png"
+    ],
+    "fileAssociations": [
+      { "ext": ["mp4"],  "name": "PinkiePiePlayer.Video", "description": "MP4 视频 (PinkiePiePlayer)",  "role": "Viewer" },
+      { "ext": ["m4v"],  "name": "PinkiePiePlayer.Video", "description": "M4V 视频 (PinkiePiePlayer)",  "role": "Viewer" },
+      { "ext": ["mkv"],  "name": "PinkiePiePlayer.Video", "description": "MKV 视频 (PinkiePiePlayer)",  "role": "Viewer" },
+      { "ext": ["avi"],  "name": "PinkiePiePlayer.Video", "description": "AVI 视频 (PinkiePiePlayer)",  "role": "Viewer" },
+      { "ext": ["mov"],  "name": "PinkiePiePlayer.Video", "description": "MOV 视频 (PinkiePiePlayer)",  "role": "Viewer" },
+      { "ext": ["wmv"],  "name": "PinkiePiePlayer.Video", "description": "WMV 视频 (PinkiePiePlayer)",  "role": "Viewer" },
+      { "ext": ["flv"],  "name": "PinkiePiePlayer.Video", "description": "FLV 视频 (PinkiePiePlayer)",  "role": "Viewer" },
+      { "ext": ["webm"], "name": "PinkiePiePlayer.Video", "description": "WEBM 视频 (PinkiePiePlayer)", "role": "Viewer" },
+      { "ext": ["mpg"],  "name": "PinkiePiePlayer.Video", "description": "MPG 视频 (PinkiePiePlayer)",  "role": "Viewer" },
+      { "ext": ["mpeg"], "name": "PinkiePiePlayer.Video", "description": "MPEG 视频 (PinkiePiePlayer)", "role": "Viewer" },
+      { "ext": ["ts"],   "name": "PinkiePiePlayer.Video", "description": "TS 视频 (PinkiePiePlayer)",   "role": "Viewer" },
+      { "ext": ["rmvb"], "name": "PinkiePiePlayer.Video", "description": "RMVB 视频 (PinkiePiePlayer)", "role": "Viewer" }
+    ],
+    "windows": {
+      "nsis": {
+        "installerHooks": "./windows/hooks.nsh",
+        "installerIcon": "./icons/icon.ico"
+      }
+    }
+  }
+}
+
