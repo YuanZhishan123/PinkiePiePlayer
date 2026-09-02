@@ -133,6 +133,38 @@ fn open_file_dialog() -> Option<String> {
         .map(|p| p.to_string_lossy().to_string())
 }
 
+/// Open a native file picker for a subtitle file, returning the chosen path (if any).
+#[tauri::command]
+fn open_subtitle_dialog() -> Option<String> {
+    rfd::FileDialog::new()
+        .add_filter("字幕文件", &["srt"])
+        .add_filter("所有文件", &["*"])
+        .set_title("打开字幕文件")
+        .pick_file()
+        .map(|p| p.to_string_lossy().to_string())
+}
+
+/// Find a sibling `.srt` sharing the same base name as `path` (case-insensitive),
+/// e.g. "ep01.mp4" ↔ "ep01.srt" in the same directory.
+#[tauri::command]
+fn find_sibling_subtitle(path: String) -> Option<String> {
+    let p = PathBuf::from(&path);
+    let stem = p.file_stem()?.to_string_lossy().to_lowercase();
+    let parent = p.parent()?;
+    let entries = std::fs::read_dir(parent).ok()?;
+    for entry in entries.flatten() {
+        let ep = entry.path();
+        let ext_ok = ep
+            .extension()
+            .map(|e| e.to_string_lossy().eq_ignore_ascii_case("srt"))
+            .unwrap_or(false);
+        if ext_ok && ep.file_stem().map(|s| s.to_string_lossy().to_lowercase() == stem).unwrap_or(false) {
+            return Some(ep.to_string_lossy().to_string());
+        }
+    }
+    None
+}
+
 /// Startup file passed via command line arguments (e.g. "Open with...").
 struct StartupFile(pub Option<String>);
 
@@ -260,6 +292,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             scan_video_dir,
             open_file_dialog,
+            open_subtitle_dialog,
+            find_sibling_subtitle,
             get_startup_file
         ])
         .on_window_event(|window, event| {
@@ -306,6 +340,24 @@ mod tests {
         assert_eq!(names, vec!["a.mp3", "b.mp4", "c.flac"]); // 自然排序,d.txt 排除
         assert!(items[0].audio); // mp3 标记为音频
         assert!(!items[1].audio); // mp4 标记为视频
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn find_sibling_subtitle_matches_stem() {
+        let dir = std::env::temp_dir().join("ppp_srt_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let video = dir.join("EP01.mp4");
+        std::fs::write(&video, b"x").unwrap();
+        std::fs::write(dir.join("ep01.SRT"), b"1\n00:00:01,000 --> 00:00:02,000\nhi\n").unwrap();
+        std::fs::write(dir.join("other.srt"), b"x").unwrap();
+
+        let hit = find_sibling_subtitle(video.to_string_lossy().to_string()).unwrap();
+        assert!(hit.to_lowercase().ends_with("ep01.srt"));
+
+        let none = find_sibling_subtitle(dir.join("nope.mp4").to_string_lossy().to_string());
+        assert!(none.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

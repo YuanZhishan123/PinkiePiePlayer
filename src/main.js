@@ -34,6 +34,7 @@ const bufferedBar = $('progress-buffered');
 const dot = $('progress-dot');
 const tip = $('progress-tip');
 const speedBadge = $('speed-badge');
+const subtitleEl = $('subtitle');
 const toastEl = $('toast');
 const win = getCurrentWindow();
 let playlistWin = null; // 播放列表窗口句柄(冷启动时窗口创建可能晚于本页 JS,改为惰性获取)
@@ -216,14 +217,23 @@ window.addEventListener('mousemove', (e) => {
 window.addEventListener('mouseup', () => { pressPos = null; });
 
 /* ---------------- 打开视频 ---------------- */
+let mediaSeq = 0; // 打开文件的序号,防止快速切换时异步字幕加载串台
+
 async function openVideo(path, { fromPlaylist = false } = {}) {
   stopBoost();
+  const seq = ++mediaSeq;
+  clearSubtitle(true); // 换片先清字幕
   video.src = convertFileSrc(path);
   titleText.textContent = fileName(path);
   emptyState.classList.add('hidden');
   video.playbackRate = rate;
   video.play().catch(() => {});
   wake();
+
+  // 自动加载同名 SRT 字幕(如 ep01.mp4 ↔ ep01.srt)
+  invoke('find_sibling_subtitle', { path })
+    .then((p) => { if (p && !subtitleCues && seq === mediaSeq) loadSubtitle(p); })
+    .catch(() => {});
 
   const dir = dirname(path);
   if (!fromPlaylist || dir !== currentDir) {
@@ -309,6 +319,7 @@ function updateProgressUI() {
 video.addEventListener('timeupdate', () => {
   timeCurrent.textContent = fmtTime(video.currentTime);
   if (!seeking) updateProgressUI();
+  updateSubtitle(video.currentTime);
 });
 
 video.addEventListener('progress', () => {
@@ -639,8 +650,114 @@ win.onFocusChanged(async ({ payload: focused }) => {
 
 // 主窗口移动/缩放时,播放列表窗口由 Rust 原生事件实时同步(见 main.rs)
 
-/* ---------------- 字幕(占位) ---------------- */
-btnSubtitle.addEventListener('click', () => toast('字幕功能开发中,敬请期待'));
+/* ---------------- 字幕(SRT) ---------------- */
+let subtitleCues = null; // null = 未加载字幕;[{start,end,text}] 按开始时间排序
+
+const SRT_TIME_RE = /(\d{1,2}):(\d{2}):(\d{2})[,.](\d{1,3})\s*-->\s*(\d{1,2}):(\d{2}):(\d{2})[,.](\d{1,3})/;
+
+function srtSeconds(h, m, s, ms) {
+  return (+h) * 3600 + (+m) * 60 + (+s) + (+String(ms).padEnd(3, '0')) / 1000;
+}
+
+function parseSrt(text) {
+  const cues = [];
+  for (const block of text.replace(/\r\n?/g, '\n').split(/\n{2,}/)) {
+    const m = block.match(SRT_TIME_RE);
+    if (!m) continue;
+    const lines = block.split('\n');
+    const ti = lines.findIndex((l) => SRT_TIME_RE.test(l));
+    const content = lines.slice(ti + 1).join('\n')
+      .replace(/\{\\[^}]*\}/g, '') // {\an8} 等样式标签
+      .replace(/<[^>]+>/g, '') // <i>、<font> 等标签
+      .trim();
+    if (content) {
+      cues.push({
+        start: srtSeconds(m[1], m[2], m[3], m[4]),
+        end: srtSeconds(m[5], m[6], m[7], m[8]),
+        text: content,
+      });
+    }
+  }
+  cues.sort((a, b) => a.start - b.start);
+  return cues;
+}
+
+// 字幕文件编码:优先严格 UTF-8,失败回落 GBK(Windows 中文环境常见),兼容 UTF-16 BOM
+function decodeSubtitleBytes(buf) {
+  const u8 = new Uint8Array(buf);
+  try {
+    if (u8[0] === 0xff && u8[1] === 0xfe) return new TextDecoder('utf-16le').decode(u8);
+    if (u8[0] === 0xfe && u8[1] === 0xff) return new TextDecoder('utf-16be').decode(u8);
+    return new TextDecoder('utf-8', { fatal: true }).decode(u8);
+  } catch {
+    try { return new TextDecoder('gbk').decode(u8); }
+    catch { return new TextDecoder('utf-8').decode(u8); }
+  }
+}
+
+async function loadSubtitle(path) {
+  try {
+    const res = await fetch(convertFileSrc(path));
+    if (!res.ok) throw new Error('fetch failed');
+    const cues = parseSrt(decodeSubtitleBytes(await res.arrayBuffer()));
+    if (!cues.length) { toast('字幕文件解析失败'); return false; }
+    subtitleCues = cues;
+    btnSubtitle.classList.add('active');
+    btnSubtitle.title = '关闭字幕';
+    toast(`字幕已加载(共 ${cues.length} 条)`);
+    updateSubtitle(video.currentTime);
+    return true;
+  } catch {
+    toast('无法读取字幕文件');
+    return false;
+  }
+}
+
+function clearSubtitle(silent = false) {
+  subtitleCues = null;
+  subtitleEl.classList.remove('show');
+  btnSubtitle.classList.remove('active');
+  btnSubtitle.title = '加载字幕(SRT)';
+  if (!silent) toast('字幕已关闭');
+}
+
+// 二分定位 + 小范围回溯,收集覆盖 t 的 cue(重叠字幕合并显示)
+function activeSubtitleText(t) {
+  const cues = subtitleCues;
+  if (!cues) return '';
+  let lo = 0, hi = cues.length - 1, hit = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (cues[mid].start <= t) { hit = mid; lo = mid + 1; } else hi = mid - 1;
+  }
+  const parts = [];
+  for (let i = hit; i >= 0 && cues[i].start > t - 30; i--) {
+    if (cues[i].end > t) parts.unshift(cues[i].text);
+  }
+  for (let i = hit + 1; i < cues.length && cues[i].start <= t; i++) {
+    if (cues[i].end > t) parts.push(cues[i].text);
+  }
+  return parts.join('\n');
+}
+
+function updateSubtitle(t) {
+  if (!subtitleCues) return;
+  const text = activeSubtitleText(t);
+  if (text) {
+    if (subtitleEl.textContent !== text) subtitleEl.textContent = text;
+    subtitleEl.classList.add('show');
+  } else {
+    subtitleEl.classList.remove('show');
+  }
+}
+
+btnSubtitle.addEventListener('click', async () => {
+  if (subtitleCues) { clearSubtitle(); return; }
+  const p = await invoke('open_subtitle_dialog');
+  if (p) loadSubtitle(p);
+});
+
+video.addEventListener('seeked', () => updateSubtitle(video.currentTime));
 
 /* ---------------- 窗口控制 ---------------- */
 $('btn-minimize').addEventListener('click', () => win.minimize());
