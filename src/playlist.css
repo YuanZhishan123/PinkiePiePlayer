@@ -113,6 +113,15 @@ button {
   text-overflow: ellipsis;
 }
 
+/* 音频条目标记 */
+#pl-list li .kind {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--accent);
+  width: 14px;
+  text-align: center;
+}
+
 #pl-list li.active {
   background: rgba(91, 157, 255, 0.16);
   color: #fff;

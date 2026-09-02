@@ -9,9 +9,11 @@ use tauri::{Listener, Manager, PhysicalPosition, PhysicalSize};
 static PLAYLIST_DETACHED: AtomicBool = AtomicBool::new(false);
 
 #[derive(serde::Serialize, Clone)]
-pub struct VideoItem {
+pub struct MediaItem {
     pub name: String,
     pub path: String,
+    /// 是否为纯音频文件(前端据此显示唱片界面)
+    pub audio: bool,
 }
 
 const VIDEO_EXTS: &[&str] = &[
@@ -19,16 +21,26 @@ const VIDEO_EXTS: &[&str] = &[
     "vob", "ogv", "3gp", "rmvb", "mpe",
 ];
 
-fn is_video_file(p: &std::path::Path) -> bool {
-    if !p.is_file() {
-        return false;
-    }
+/// WebView2(Chromium 内核)可解码的音频格式
+const AUDIO_EXTS: &[&str] = &["mp3", "flac", "wav", "ogg", "oga", "opus", "m4a", "aac", "weba"];
+
+fn ext_of(p: &std::path::Path) -> Option<String> {
     p.extension()
-        .map(|e| {
-            let e = e.to_string_lossy().to_lowercase();
-            VIDEO_EXTS.contains(&e.as_str())
-        })
-        .unwrap_or(false)
+        .map(|e| e.to_string_lossy().to_lowercase())
+}
+
+fn is_video_file(p: &std::path::Path) -> bool {
+    p.is_file()
+        && ext_of(p)
+            .map(|e| VIDEO_EXTS.contains(&e.as_str()))
+            .unwrap_or(false)
+}
+
+fn is_audio_file(p: &std::path::Path) -> bool {
+    p.is_file()
+        && ext_of(p)
+            .map(|e| AUDIO_EXTS.contains(&e.as_str()))
+            .unwrap_or(false)
 }
 
 /// Natural order comparison: "ep2" < "ep10", case-insensitive, numeric aware.
@@ -70,10 +82,10 @@ fn nat_cmp(a: &str, b: &str) -> std::cmp::Ordering {
     (av.len() - i).cmp(&(bv.len() - j))
 }
 
-/// Scan the directory of `path` (or the directory itself) for video files,
-/// returning them naturally sorted.
+/// Scan the directory of `path` (or the directory itself) for media files
+/// (video + audio), returning them naturally sorted.
 #[tauri::command]
-fn scan_video_dir(path: String) -> Result<Vec<VideoItem>, String> {
+fn scan_video_dir(path: String) -> Result<Vec<MediaItem>, String> {
     let p = PathBuf::from(&path);
     let dir = if p.is_dir() {
         p
@@ -83,17 +95,19 @@ fn scan_video_dir(path: String) -> Result<Vec<VideoItem>, String> {
             .ok_or_else(|| "无法获取文件所在目录".to_string())?
     };
 
-    let mut items: Vec<VideoItem> = Vec::new();
+    let mut items: Vec<MediaItem> = Vec::new();
     let entries = std::fs::read_dir(&dir).map_err(|e| format!("读取目录失败: {e}"))?;
     for entry in entries.flatten() {
         let ep = entry.path();
-        if is_video_file(&ep) {
-            items.push(VideoItem {
+        let (is_video, is_audio) = (is_video_file(&ep), is_audio_file(&ep));
+        if is_video || is_audio {
+            items.push(MediaItem {
                 name: ep
                     .file_name()
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_default(),
                 path: ep.to_string_lossy().to_string(),
+                audio: is_audio,
             });
         }
     }
@@ -101,7 +115,7 @@ fn scan_video_dir(path: String) -> Result<Vec<VideoItem>, String> {
     Ok(items)
 }
 
-/// Open a native file picker, returning the chosen video path (if any).
+/// Open a native file picker, returning the chosen media path (if any).
 #[tauri::command]
 fn open_file_dialog() -> Option<String> {
     rfd::FileDialog::new()
@@ -112,8 +126,9 @@ fn open_file_dialog() -> Option<String> {
                 "mpeg", "vob", "ogv", "3gp", "rmvb",
             ],
         )
+        .add_filter("音频文件", AUDIO_EXTS)
         .add_filter("所有文件", &["*"])
-        .set_title("打开视频")
+        .set_title("打开媒体文件")
         .pick_file()
         .map(|p| p.to_string_lossy().to_string())
 }
@@ -272,4 +287,25 @@ fn main() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scan_returns_video_and_audio() {
+        let dir = std::env::temp_dir().join("ppp_scan_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in ["b.mp4", "a.mp3", "c.flac", "d.txt"] {
+            std::fs::write(dir.join(name), b"x").unwrap();
+        }
+        let items = scan_video_dir(dir.to_string_lossy().to_string()).unwrap();
+        let names: Vec<&str> = items.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(names, vec!["a.mp3", "b.mp4", "c.flac"]); // 自然排序,d.txt 排除
+        assert!(items[0].audio); // mp3 标记为音频
+        assert!(!items[1].audio); // mp4 标记为视频
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

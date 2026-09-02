@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "PinkiePiePlayer",
-  "version": "0.1.0",
+  "version": "0.2.1",
   "identifier": "com.pinkiepie.player",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -71,7 +71,14 @@
       { "ext": ["mpg"],  "name": "PinkiePiePlayer.Video", "description": "MPG 视频 (PinkiePiePlayer)",  "role": "Viewer" },
       { "ext": ["mpeg"], "name": "PinkiePiePlayer.Video", "description": "MPEG 视频 (PinkiePiePlayer)", "role": "Viewer" },
       { "ext": ["ts"],   "name": "PinkiePiePlayer.Video", "description": "TS 视频 (PinkiePiePlayer)",   "role": "Viewer" },
-      { "ext": ["rmvb"], "name": "PinkiePiePlayer.Video", "description": "RMVB 视频 (PinkiePiePlayer)", "role": "Viewer" }
+      { "ext": ["rmvb"], "name": "PinkiePiePlayer.Video", "description": "RMVB 视频 (PinkiePiePlayer)", "role": "Viewer" },
+      { "ext": ["mp3"],  "name": "PinkiePiePlayer.Audio", "description": "MP3 音频 (PinkiePiePlayer)",  "role": "Viewer" },
+      { "ext": ["flac"], "name": "PinkiePiePlayer.Audio", "description": "FLAC 音频 (PinkiePiePlayer)", "role": "Viewer" },
+      { "ext": ["wav"],  "name": "PinkiePiePlayer.Audio", "description": "WAV 音频 (PinkiePiePlayer)",  "role": "Viewer" },
+      { "ext": ["m4a"],  "name": "PinkiePiePlayer.Audio", "description": "M4A 音频 (PinkiePiePlayer)",  "role": "Viewer" },
+      { "ext": ["aac"],  "name": "PinkiePiePlayer.Audio", "description": "AAC 音频 (PinkiePiePlayer)",  "role": "Viewer" },
+      { "ext": ["ogg"],  "name": "PinkiePiePlayer.Audio", "description": "OGG 音频 (PinkiePiePlayer)",  "role": "Viewer" },
+      { "ext": ["opus"], "name": "PinkiePiePlayer.Audio", "description": "OPUS 音频 (PinkiePiePlayer)", "role": "Viewer" }
     ],
     "windows": {
       "nsis": {

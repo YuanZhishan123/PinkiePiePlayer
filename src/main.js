@@ -36,7 +36,19 @@ const tip = $('progress-tip');
 const speedBadge = $('speed-badge');
 const toastEl = $('toast');
 const win = getCurrentWindow();
-const playlistWin = await Window.getByLabel('playlist');
+let playlistWin = null; // 播放列表窗口句柄(冷启动时窗口创建可能晚于本页 JS,改为惰性获取)
+
+// 获取播放列表窗口句柄:未取到时轮询重试(最长约 10s),避免冷启动竞态导致列表永久失效
+async function getPlaylistWin() {
+  if (playlistWin) return playlistWin;
+  for (let i = 0; i < 40; i++) {
+    playlistWin = await Window.getByLabel('playlist');
+    if (playlistWin) return playlistWin;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  return null;
+}
+getPlaylistWin(); // 启动时尽早预热句柄
 
 /* ---------------- 常量与状态 ---------------- */
 const RATES = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0];
@@ -147,9 +159,15 @@ function togglePlay() {
   else video.pause();
 }
 
-video.addEventListener('play', () => { btnPlay.innerHTML = ICON_PAUSE; btnPlay.title = '暂停(空格)'; });
-video.addEventListener('pause', () => { btnPlay.innerHTML = ICON_PLAY; btnPlay.title = '播放(空格)'; });
-video.addEventListener('ended', () => playNext());
+video.addEventListener('play', () => { btnPlay.innerHTML = ICON_PAUSE; btnPlay.title = '暂停(空格)'; app.classList.add('is-playing'); });
+video.addEventListener('pause', () => { btnPlay.innerHTML = ICON_PLAY; btnPlay.title = '播放(空格)'; app.classList.remove('is-playing'); });
+video.addEventListener('ended', () => { app.classList.remove('is-playing'); playNext(); });
+
+// loadedmetadata 后判断是否为纯音频(无视频轨):audioWidth 有值而 videoWidth 为 0
+video.addEventListener('loadedmetadata', () => {
+  const audioOnly = video.videoWidth === 0;
+  app.classList.toggle('audio-mode', audioOnly);
+});
 
 btnPlay.addEventListener('click', togglePlay);
 
@@ -538,7 +556,8 @@ btnFullscreen.addEventListener('click', toggleFullscreen);
 
 /* ---------------- 播放列表(外挂窗口) ---------------- */
 async function positionPlaylistWindow() {
-  if (!playlistWin) return;
+  const pw = await getPlaylistWin();
+  if (!pw) return;
   try {
     const [factor, pos, size, mon] = await Promise.all([
       win.scaleFactor(),
@@ -546,17 +565,17 @@ async function positionPlaylistWindow() {
       win.outerSize(),
       currentMonitor(),
     ]);
-    const pw = Math.round(PLAYLIST_W * factor);
+    const pwW = Math.round(PLAYLIST_W * factor);
     let x = pos.x + size.width;
     let y = pos.y;
     // 限制在所在显示器范围内
     if (mon && mon.size && mon.position) {
-      const maxX = mon.position.x + mon.size.width - pw;
+      const maxX = mon.position.x + mon.size.width - pwW;
       if (x > maxX) x = Math.max(mon.position.x, maxX);
       if (y < mon.position.y) y = mon.position.y;
     }
-    await playlistWin.setPosition(new PhysicalPosition(x, y));
-    await playlistWin.setSize(new PhysicalSize(pw, size.height));
+    await pw.setPosition(new PhysicalPosition(x, y));
+    await pw.setSize(new PhysicalSize(pwW, size.height));
   } catch { /* ignore */ }
 }
 
@@ -568,16 +587,20 @@ async function setPlaylistOpen(open) {
   if (open && isFullscreen) open = false;
   playlistOpen = open;
   btnPlaylist.classList.toggle('active', playlistOpen);
-  if (!playlistWin) return;
+  const pw = await getPlaylistWin();
+  if (!pw) {
+    if (open) toast('播放列表窗口未就绪,请稍后重试');
+    return;
+  }
   try {
     if (playlistOpen) {
       await emit('playlist://attach'); // 若播放列表曾被独立拖开,重新恢复跟随
       await positionPlaylistWindow();
-      await playlistWin.show();
+      await pw.show();
       await win.setFocus(); // 焦点还给主窗口
       sendPlaylistData(); // 确保列表数据同步(避免启动时的就绪竞态)
     } else {
-      await playlistWin.hide();
+      await pw.hide();
     }
   } catch { /* ignore */ }
 }
@@ -596,16 +619,20 @@ listen('playlist://ready', () => sendPlaylistData());
 win.onResized(async () => {
   try {
     if (await win.isMinimized()) {
-      if (playlistWin && await playlistWin.isVisible()) await playlistWin.hide();
+      const pw = await getPlaylistWin();
+      if (pw && await pw.isVisible()) await pw.hide();
     }
   } catch { /* ignore */ }
 });
 
 win.onFocusChanged(async ({ payload: focused }) => {
   try {
-    if (focused && playlistOpen && playlistWin && !(await playlistWin.isVisible())) {
-      await positionPlaylistWindow();
-      await playlistWin.show();
+    if (focused && playlistOpen) {
+      const pw = await getPlaylistWin();
+      if (pw && !(await pw.isVisible())) {
+        await positionPlaylistWindow();
+        await pw.show();
+      }
     }
   } catch { /* ignore */ }
 });

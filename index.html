@@ -25,6 +25,14 @@
       <div id="stage">
         <video id="video"></video>
 
+        <!-- 纯音频模式:唱片 + 均衡器动画 -->
+        <div id="audio-art" aria-hidden="true">
+          <div id="audio-disc">
+            <svg viewBox="0 0 24 24"><path d="M9 18.2V6.4l10-2.2v11.6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><circle cx="6.6" cy="18.2" r="2.4" fill="currentColor"/><circle cx="16.6" cy="15.8" r="2.4" fill="currentColor"/></svg>
+          </div>
+          <div id="audio-eq"><i></i><i></i><i></i><i></i><i></i></div>
+        </div>
+
         <!-- 顶部/底部黑色渐变(浅色画面下保证 UI 可读,随 UI 同步淡出) -->
         <div id="shade-top" aria-hidden="true"></div>
         <div id="shade-bottom" aria-hidden="true"></div>
@@ -34,11 +42,11 @@
 
         <!-- 空状态 -->
         <div id="empty-state">
-          <button id="btn-open" title="打开视频文件">
+          <button id="btn-open" title="打开媒体文件">
             <svg viewBox="0 0 24 24"><path d="M8 5.2v13.6L19 12z" fill="currentColor"/></svg>
-            <span>打开视频</span>
+            <span>打开视频 / 音频</span>
           </button>
-          <p class="hint">或将视频文件拖入窗口 · 同目录视频自动生成播放列表</p>
+          <p class="hint">或将视频 / 音频文件拖入窗口 · 同目录媒体自动生成播放列表</p>
           <p class="keys">空格 播放/暂停 · ↑↓ 音量 · 长按→ 三倍速 · F 全屏 · 按住画面拖动窗口</p>
         </div>
 

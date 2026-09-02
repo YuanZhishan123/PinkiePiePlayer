@@ -21,7 +21,9 @@ function render() {
   items.forEach((it, i) => {
     const li = document.createElement('li');
     if (i === currentIndex) li.classList.add('active');
-    li.innerHTML = `<span class="idx">${String(i + 1).padStart(2, '0')}</span><span class="nm"></span>`;
+    li.innerHTML = it.audio
+      ? `<span class="idx">${String(i + 1).padStart(2, '0')}</span><span class="kind">♪</span><span class="nm"></span>`
+      : `<span class="idx">${String(i + 1).padStart(2, '0')}</span><span class="nm"></span>`;
     li.querySelector('.nm').textContent = stripExt(it.name);
     li.title = it.name;
     li.addEventListener('click', () => {
