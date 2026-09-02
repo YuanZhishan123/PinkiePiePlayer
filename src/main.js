@@ -250,6 +250,11 @@ listen('mpv://end-file', (e) => {
   // reason === 2 (STOP) 为主动切换文件,忽略
 });
 
+// 就绪握手:页面就绪后主动 ping,Rust 回发 mpv://ready。
+// (Rust 在 setup 时发出的 ready 可能早于本页 listen 注册而被丢弃,
+//  竞态下 mpvReady 永 false,导致轮询/暂停/进度全部静默失效)
+invoke('mpv_ready_ping').catch(() => {});
+
 // 进度/时间轮询(mpv 不推送高频 time-pos,低频拉取)
 setInterval(async () => {
   if (!mpvReady || !hasMedia || seeking) return;

@@ -199,6 +199,14 @@ fn mpv_get_timepos() -> Option<f64> {
     mpv::get_double("time-pos")
 }
 
+/// 前端就绪握手:页面加载完成后调用,Rust 回发 mpv://ready。
+/// 修复竞态:事件线程启动时立即 emit 的 ready 早于前端 listen 注册而被丢弃,
+/// 导致 mpvReady 永 false、轮询/暂停/进度全部静默失效。
+#[tauri::command]
+fn mpv_ready_ping(app: tauri::AppHandle) {
+    let _ = app.emit("mpv://ready", ());
+}
+
 #[tauri::command]
 fn mpv_toggle_sub() -> Result<(), String> {
     let cur = mpv::get_flag("sub-visibility").unwrap_or(true);
@@ -593,6 +601,7 @@ fn main() {
             open_subtitle_dialog,
             get_startup_file,
             mpv_loadfile,
+            mpv_ready_ping,
             mpv_set_pause,
             mpv_seek,
             mpv_seek_rel,
