@@ -21,9 +21,8 @@
         </div>
       </header>
 
-      <!-- 视频舞台 -->
+      <!-- 视频舞台(mpv 子窗口渲染于 WebView 之下的透明区域) -->
       <div id="stage">
-        <video id="video"></video>
 
         <!-- 纯音频模式:唱片 + 均衡器动画 -->
         <div id="audio-art" aria-hidden="true">
@@ -39,9 +38,6 @@
 
         <!-- 长按倍速角标 -->
         <div id="speed-badge">3.0x</div>
-
-        <!-- 字幕(SRT) -->
-        <div id="subtitle" aria-live="off"></div>
 
         <!-- 空状态 -->
         <div id="empty-state">
@@ -88,7 +84,7 @@
             <svg viewBox="0 0 24 24"><path d="M15.3 5h2.2v14h-2.2zM5 5.6v12.8L14 12z" fill="currentColor"/></svg>
           </button>
 
-          <button id="btn-subtitle" title="字幕(开发中)">
+          <button id="btn-subtitle" title="加载字幕(SRT/ASS)">
             <svg viewBox="0 0 24 24">
               <rect x="3" y="5" width="18" height="14" rx="3.5" fill="none" stroke="currentColor" stroke-width="1.7"/>
               <path d="M7.5 11.6a2.6 2.6 0 010 .8M10.1 10.2a4.4 4.4 0 010 3.6M13.8 11.6a2.6 2.6 0 010 .8M16.4 10.2a4.4 4.4 0 010 3.6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>

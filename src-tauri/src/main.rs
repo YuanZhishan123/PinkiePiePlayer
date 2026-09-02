@@ -1,12 +1,17 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod mpv;
+
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tauri::{Listener, Manager, PhysicalPosition, PhysicalSize};
+use tauri::{Emitter, Listener, Manager, PhysicalPosition, PhysicalSize};
 
 /// 播放列表窗口是否已被用户独立拖开(脱离主窗口的位置跟随)
 static PLAYLIST_DETACHED: AtomicBool = AtomicBool::new(false);
+
+/// 当前文件是否有视频轨(mpv 视频子窗口应否显示;心跳据此恢复显示)
+static VIDEO_SHOWN: AtomicBool = AtomicBool::new(false);
 
 #[derive(serde::Serialize, Clone)]
 pub struct MediaItem {
@@ -18,11 +23,11 @@ pub struct MediaItem {
 
 const VIDEO_EXTS: &[&str] = &[
     "mp4", "mkv", "webm", "mov", "m4v", "avi", "flv", "ts", "m2ts", "wmv", "mpg", "mpeg",
-    "vob", "ogv", "3gp", "rmvb", "mpe",
+    "vob", "ogv", "3gp", "rmvb", "mpe", "wm", "ogm",
 ];
 
-/// WebView2(Chromium 内核)可解码的音频格式
-const AUDIO_EXTS: &[&str] = &["mp3", "flac", "wav", "ogg", "oga", "opus", "m4a", "aac", "weba"];
+/// libmpv 几乎支持所有音频格式,这里仅用于扫描过滤与列表标记
+const AUDIO_EXTS: &[&str] = &["mp3", "flac", "wav", "ogg", "oga", "opus", "m4a", "aac", "weba", "wma", "ape", "mka"];
 
 fn ext_of(p: &std::path::Path) -> Option<String> {
     p.extension()
@@ -62,7 +67,6 @@ fn nat_cmp(a: &str, b: &str) -> std::cmp::Ordering {
                 nb.push(bv[j]);
                 j += 1;
             }
-            // Compare numeric value (strip leading zeros), shorter first when equal value.
             let ta = na.trim_start_matches('0');
             let tb = nb.trim_start_matches('0');
             let ord = ta.len().cmp(&tb.len()).then_with(|| ta.cmp(tb));
@@ -123,7 +127,7 @@ fn open_file_dialog() -> Option<String> {
             "视频文件",
             &[
                 "mp4", "mkv", "webm", "mov", "m4v", "avi", "flv", "ts", "m2ts", "wmv", "mpg",
-                "mpeg", "vob", "ogv", "3gp", "rmvb",
+                "mpeg", "vob", "ogv", "3gp", "rmvb", "wm", "ogm",
             ],
         )
         .add_filter("音频文件", AUDIO_EXTS)
@@ -137,32 +141,11 @@ fn open_file_dialog() -> Option<String> {
 #[tauri::command]
 fn open_subtitle_dialog() -> Option<String> {
     rfd::FileDialog::new()
-        .add_filter("字幕文件", &["srt"])
+        .add_filter("字幕文件", &["srt", "ass", "ssa", "sub", "vtt"])
         .add_filter("所有文件", &["*"])
         .set_title("打开字幕文件")
         .pick_file()
         .map(|p| p.to_string_lossy().to_string())
-}
-
-/// Find a sibling `.srt` sharing the same base name as `path` (case-insensitive),
-/// e.g. "ep01.mp4" ↔ "ep01.srt" in the same directory.
-#[tauri::command]
-fn find_sibling_subtitle(path: String) -> Option<String> {
-    let p = PathBuf::from(&path);
-    let stem = p.file_stem()?.to_string_lossy().to_lowercase();
-    let parent = p.parent()?;
-    let entries = std::fs::read_dir(parent).ok()?;
-    for entry in entries.flatten() {
-        let ep = entry.path();
-        let ext_ok = ep
-            .extension()
-            .map(|e| e.to_string_lossy().eq_ignore_ascii_case("srt"))
-            .unwrap_or(false);
-        if ext_ok && ep.file_stem().map(|s| s.to_string_lossy().to_lowercase() == stem).unwrap_or(false) {
-            return Some(ep.to_string_lossy().to_string());
-        }
-    }
-    None
 }
 
 /// Startup file passed via command line arguments (e.g. "Open with...").
@@ -173,10 +156,85 @@ fn get_startup_file(state: tauri::State<StartupFile>) -> Option<String> {
     state.0.clone()
 }
 
+/* ============ mpv 播放控制命令(前端桥接) ============ */
+
+#[tauri::command]
+fn mpv_loadfile(path: String) -> Result<(), String> {
+    // 异步执行:大文件打开/建索引不能阻塞 invoke
+    mpv::command_async(&["loadfile", &path])
+}
+
+#[tauri::command]
+fn mpv_set_pause(paused: bool) -> Result<(), String> {
+    mpv::set_flag("pause", paused)
+}
+
+#[tauri::command]
+fn mpv_seek(t: f64) -> Result<(), String> {
+    mpv::command(&["seek", &format!("{t}"), "absolute+exact"])
+}
+
+#[tauri::command]
+fn mpv_seek_rel(d: f64) -> Result<(), String> {
+    mpv::command(&["seek", &format!("{d}"), "relative"])
+}
+
+#[tauri::command]
+fn mpv_set_speed(v: f64) -> Result<(), String> {
+    mpv::set_double("speed", v)
+}
+
+#[tauri::command]
+fn mpv_set_volume(v: f64) -> Result<(), String> {
+    mpv::set_double("volume", v)
+}
+
+#[tauri::command]
+fn mpv_set_mute(m: bool) -> Result<(), String> {
+    mpv::set_flag("mute", m)
+}
+
+#[tauri::command]
+fn mpv_get_timepos() -> Option<f64> {
+    mpv::get_double("time-pos")
+}
+
+#[tauri::command]
+fn mpv_toggle_sub() -> Result<(), String> {
+    let cur = mpv::get_flag("sub-visibility").unwrap_or(true);
+    mpv::set_flag("sub-visibility", !cur)
+}
+
+#[tauri::command]
+fn mpv_sub_add(path: String) -> Result<(), String> {
+    mpv::command(&["sub-add", &path, "select"])
+}
+
+#[tauri::command]
+fn mpv_has_sub() -> bool {
+    has_track_type("sub")
+}
+
+#[tauri::command]
+fn mpv_set_panscan(v: f64) -> Result<(), String> {
+    mpv::set_double("panscan", v)
+}
+
+#[tauri::command]
+fn mpv_set_subpos(v: f64) -> Result<(), String> {
+    mpv::set_double("sub-pos", v)
+}
+
+fn has_track_type(t: &str) -> bool {
+    let n = mpv::get_int("track-list/count").unwrap_or(0);
+    (0..n).any(|i| mpv::get_string(&format!("track-list/{i}/type")).as_deref() == Some(t))
+}
+
+/* ============ 播放列表窗口跟随 / z 序 ============ */
+
 /// 播放列表窗口实时跟随主窗口:贴在主窗口右侧、同高。
 /// 在原生事件回调中直接同步,拖动/缩放过程中即时生效。
 fn sync_playlist_window(main: &tauri::Window) {
-    // 用户已把播放列表独立拖开:不再强制跟随主窗口
     if PLAYLIST_DETACHED.load(Ordering::Relaxed) {
         return;
     }
@@ -193,7 +251,6 @@ fn sync_playlist_window(main: &tauri::Window) {
     let pw = (300.0 * scale).round() as i32;
     let mut x = pos.x + size.width as i32;
     let mut y = pos.y;
-    // 限制在主窗口所在显示器范围内
     if let Ok(Some(mon)) = main.current_monitor() {
         let mpos = mon.position();
         let msize = mon.size();
@@ -262,6 +319,238 @@ fn apply_rounded_corners(window: &tauri::WebviewWindow) {
     }
 }
 
+/* ============ mpv 视频子窗口(渲染在 WebView 之下) ============ */
+
+#[cfg(target_os = "windows")]
+mod video_child {
+    use std::ffi::c_void;
+    use std::sync::atomic::{AtomicPtr, Ordering};
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::Graphics::Gdi::{GetStockObject, HBRUSH};
+    use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        CreateWindowExW, DefWindowProcW, GetClientRect, MoveWindow, RegisterClassW,
+        SetWindowPos, ShowWindow, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOW,
+        WNDCLASSW, WS_CHILD, WS_VISIBLE,
+    };
+
+    static CHILD: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain([0]).collect()
+    }
+
+    /// 创建 mpv 渲染子窗口并压到主窗口子窗口最底层(WebView2 之下,透出视频)
+    pub fn create(parent: HWND) -> Result<HWND, String> {
+        unsafe {
+            let hinstance = GetModuleHandleW(std::ptr::null());
+            let class_w = wide("PinkieMpvHost");
+            let mut wc: WNDCLASSW = std::mem::zeroed();
+            wc.lpfnWndProc = Some(DefWindowProcW);
+            wc.hInstance = hinstance;
+            wc.lpszClassName = class_w.as_ptr();
+            // 黑色背景画刷,加载期不闪白(BLACK_BRUSH = 4)
+            wc.hbrBackground = GetStockObject(4) as HBRUSH;
+            if RegisterClassW(&wc) == 0 {
+                return Err("RegisterClassW 失败".into());
+            }
+            let title = wide("mpv-video");
+            let hwnd = CreateWindowExW(
+                0,
+                class_w.as_ptr(),
+                title.as_ptr(),
+                (WS_CHILD | WS_VISIBLE) as u32,
+                0,
+                0,
+                1,
+                1,
+                parent,
+                std::ptr::null_mut(),
+                hinstance,
+                std::ptr::null(),
+            );
+            if hwnd.is_null() {
+                return Err("CreateWindowExW 失败".into());
+            }
+            // 压到 z 序最底(HWND_BOTTOM = 1),WebView2 在其上且背景透明
+            SetWindowPos(hwnd, 1 as HWND, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            sync_size(parent);
+            CHILD.store(hwnd, Ordering::SeqCst);
+            Ok(hwnd)
+        }
+    }
+
+    /// 子窗口尺寸同步为主窗口客户区(物理像素)
+    pub fn sync_size(parent: HWND) {
+        unsafe {
+            let mut rc = std::mem::zeroed();
+            if GetClientRect(parent, &mut rc) != 0 {
+                if let Some(child) = child() {
+                    MoveWindow(child, 0, 0, rc.right, rc.bottom, 1);
+                    // 缩放过程中 WebView2 可能被提到上面,保持 mpv 在最底
+                    SetWindowPos(child, 1 as HWND, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                }
+            }
+        }
+    }
+
+    /// 音频文件隐藏视频层(露出 WebView 的唱片界面)
+    pub fn set_visible(visible: bool) {
+        VIDEO_SHOWN_STORE(visible);
+        if let Some(child) = child() {
+            unsafe {
+                ShowWindow(child, if visible { SW_SHOW } else { SW_HIDE });
+            }
+        }
+    }
+
+    /// 心跳保活:强制视频子窗口显示并压回最底层。
+    /// 修复偶发“画面全透明”:最小化恢复/显示器切换/DWM 事件后,
+    /// 子窗口可能被系统改动 z 序或隐藏,WebView 全透明背景会直接透出桌面。
+    pub fn ensure_visible_bottom() {
+        if !super::VIDEO_SHOWN.load(Ordering::Relaxed) {
+            return;
+        }
+        if let Some(child) = child() {
+            unsafe {
+                ShowWindow(child, SW_SHOW);
+                SetWindowPos(child, 1 as HWND, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            }
+        }
+    }
+
+    fn VIDEO_SHOWN_STORE(v: bool) {
+        super::VIDEO_SHOWN.store(v, Ordering::Relaxed);
+    }
+
+    pub fn child() -> Option<HWND> {
+        let c = CHILD.load(Ordering::SeqCst);
+        (!c.is_null()).then_some(c)
+    }
+}
+
+/// 载入 dll、创建视频子窗口、初始化 mpv 实例
+#[cfg(target_os = "windows")]
+fn mpv_host_init(app: &tauri::AppHandle) -> Result<(), String> {
+    let main_win = app.get_webview_window("main").ok_or("无主窗口")?;
+
+    // 1. 定位 libmpv-2.dll:安装目录 → 安装目录/resources → 开发模式 vendor
+    let dll = {
+        let mut candidates: Vec<PathBuf> = Vec::new();
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(dir) = exe.parent() {
+                candidates.push(dir.join("libmpv-2.dll"));
+                candidates.push(dir.join("resources").join("libmpv-2.dll"));
+            }
+        }
+        candidates.push(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../vendor/mpv/libmpv-2.dll"),
+        );
+        candidates
+            .into_iter()
+            .find(|p| p.exists())
+            .ok_or("未找到 libmpv-2.dll,解码组件缺失")?
+    };
+    mpv::load(&dll)?;
+
+    // 2. 视频子窗口(tauri hwnd() 返回 windows crate 的 HWND,.0 为裸指针)
+    let parent = main_win.hwnd().map_err(|e| e.to_string())?;
+    let child = video_child::create(parent.0)?;
+
+    // 3. mpv 实例(wid 绑定子窗口)
+    let h = mpv::create_with_wid(child as usize)?;
+    mpv::set_handle(h);
+
+    // 4. 观察需要同步到前端的属性
+    mpv::observe("duration", mpv::MPV_FORMAT_DOUBLE);
+    mpv::observe("pause", mpv::MPV_FORMAT_FLAG);
+    mpv::observe("demuxer-cache-time", mpv::MPV_FORMAT_DOUBLE);
+    mpv::observe("sub-visibility", mpv::MPV_FORMAT_FLAG);
+    // 转发 mpv 内部日志到 stderr,便于诊断个别文件的解码问题
+    let _ = mpv::request_log_messages("warn");
+    Ok(())
+}
+
+/// mpv 事件线程:阻塞等待并转发为 Tauri 事件
+fn spawn_mpv_events(app: tauri::AppHandle) {
+    std::thread::spawn(move || unsafe {
+        let Some(h) = mpv::handle() else { return };
+        let _ = app.emit("mpv://ready", ());
+        loop {
+            // 3s 超时轮询:空闲时做子窗口 z 序/显示状态保活(修复偶发全透明)
+            let ev = mpv::wait_event(h, 3.0);
+            if ev.is_null() {
+                video_child::ensure_visible_bottom();
+                continue;
+            }
+            match (*ev).event_id {
+                mpv::MPV_EVENT_NONE => {
+                    video_child::ensure_visible_bottom();
+                }
+                mpv::MPV_EVENT_PROPERTY_CHANGE => {
+                    if (*ev).data.is_null() {
+                        continue;
+                    }
+                    let p = (*ev).data as *const mpv::MpvEventProperty;
+                    let name = std::ffi::CStr::from_ptr((*p).name).to_string_lossy().into_owned();
+                    let payload = match (*p).format {
+                        mpv::MPV_FORMAT_FLAG if !(*p).data.is_null() => Some(serde_json::json!({
+                            "name": name,
+                            "flag": *((*p).data as *const i32) != 0
+                        })),
+                        mpv::MPV_FORMAT_DOUBLE if !(*p).data.is_null() => Some(serde_json::json!({
+                            "name": name,
+                            "num": *((*p).data as *const f64)
+                        })),
+                        mpv::MPV_FORMAT_INT64 if !(*p).data.is_null() => Some(serde_json::json!({
+                            "name": name,
+                            "num": *((*p).data as *const i64) as f64
+                        })),
+                        _ => None,
+                    };
+                    if let Some(pl) = payload {
+                        let _ = app.emit("mpv://prop", pl);
+                    }
+                }
+                mpv::MPV_EVENT_FILE_LOADED => {
+                    // 轨道查询失败时保守视为有视频(宁显示黑窗口,不透明透出桌面)
+                    let has_video = match mpv::get_int("track-list/count") {
+                        Some(n) => (0..n).any(|i| {
+                            mpv::get_string(&format!("track-list/{i}/type")).as_deref() == Some("video")
+                        }),
+                        None => true,
+                    };
+                    video_child::set_visible(has_video);
+                    let _ = app.emit("mpv://file-loaded", serde_json::json!({ "hasVideo": has_video }));
+                }
+                mpv::MPV_EVENT_END_FILE => {
+                    let reason = if (*ev).data.is_null() {
+                        -1
+                    } else {
+                        ((*ev).data as *const mpv::MpvEventEndFile).read().reason
+                    };
+                    let _ = app.emit("mpv://end-file", serde_json::json!({ "reason": reason }));
+                }
+                mpv::MPV_EVENT_LOG_MESSAGE => {
+                    // mpv 内部日志(仅 debug 构建输出,便于诊断个别文件问题)
+                    if (*ev).data.is_null() {
+                        continue;
+                    }
+                    #[cfg(debug_assertions)]
+                    {
+                        let m = (*ev).data as *const mpv::MpvEventLogMessage;
+                        let prefix = std::ffi::CStr::from_ptr((*m).prefix).to_string_lossy();
+                        let text = std::ffi::CStr::from_ptr((*m).text).to_string_lossy();
+                        eprintln!("[mpv:{}] {}", prefix.trim_end(), text.trim_end());
+                    }
+                }
+                mpv::MPV_EVENT_SHUTDOWN => break,
+                _ => {}
+            }
+        }
+    });
+}
+
 fn main() {
     let startup: Option<String> = std::env::args()
         .nth(1)
@@ -272,11 +561,20 @@ fn main() {
     tauri::Builder::default()
         .manage(StartupFile(startup))
         .setup(|app| {
+            let handle = app.handle().clone();
+
             // 主窗口启用 Windows 11 系统圆角
             #[cfg(target_os = "windows")]
-            {
-                if let Some(main_win) = app.get_webview_window("main") {
-                    apply_rounded_corners(&main_win);
+            if let Some(main_win) = app.get_webview_window("main") {
+                apply_rounded_corners(&main_win);
+            }
+
+            // mpv 播放内核初始化(组件缺失时通知前端降级提示)
+            #[cfg(target_os = "windows")]
+            match mpv_host_init(&handle) {
+                Ok(()) => spawn_mpv_events(handle.clone()),
+                Err(e) => {
+                    let _ = handle.emit("mpv://unavailable", e);
                 }
             }
 
@@ -293,8 +591,20 @@ fn main() {
             scan_video_dir,
             open_file_dialog,
             open_subtitle_dialog,
-            find_sibling_subtitle,
-            get_startup_file
+            get_startup_file,
+            mpv_loadfile,
+            mpv_set_pause,
+            mpv_seek,
+            mpv_seek_rel,
+            mpv_set_speed,
+            mpv_set_volume,
+            mpv_set_mute,
+            mpv_get_timepos,
+            mpv_toggle_sub,
+            mpv_sub_add,
+            mpv_has_sub,
+            mpv_set_panscan,
+            mpv_set_subpos
         ])
         .on_window_event(|window, event| {
             if window.label() != "main" {
@@ -304,13 +614,25 @@ fn main() {
                 // 拖动/缩放过程中实时同步外挂播放列表窗口
                 tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {
                     sync_playlist_window(window);
+                    #[cfg(target_os = "windows")]
+                    {
+                        if let Ok(parent) = window.hwnd() {
+                            video_child::sync_size(parent.0);
+                        }
+                    }
                 }
                 // 主窗口被激活时,把播放列表提到主窗口正上方,
                 // 避免被其他窗口遮盖(如 alt-tab 切换后再切回)
                 tauri::WindowEvent::Focused(true) => {
                     sync_playlist_window(window);
                     #[cfg(target_os = "windows")]
-                    sync_playlist_zorder(window);
+                    {
+                        sync_playlist_zorder(window);
+                        if let Ok(parent) = window.hwnd() {
+                            video_child::sync_size(parent.0);
+                        }
+                        video_child::ensure_visible_bottom();
+                    }
                 }
                 // 主窗口关闭时直接退出应用,避免外挂播放列表窗口残留进程
                 tauri::WindowEvent::CloseRequested { .. } => {
@@ -337,27 +659,9 @@ mod tests {
         }
         let items = scan_video_dir(dir.to_string_lossy().to_string()).unwrap();
         let names: Vec<&str> = items.iter().map(|i| i.name.as_str()).collect();
-        assert_eq!(names, vec!["a.mp3", "b.mp4", "c.flac"]); // 自然排序,d.txt 排除
-        assert!(items[0].audio); // mp3 标记为音频
-        assert!(!items[1].audio); // mp4 标记为视频
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn find_sibling_subtitle_matches_stem() {
-        let dir = std::env::temp_dir().join("ppp_srt_test");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let video = dir.join("EP01.mp4");
-        std::fs::write(&video, b"x").unwrap();
-        std::fs::write(dir.join("ep01.SRT"), b"1\n00:00:01,000 --> 00:00:02,000\nhi\n").unwrap();
-        std::fs::write(dir.join("other.srt"), b"x").unwrap();
-
-        let hit = find_sibling_subtitle(video.to_string_lossy().to_string()).unwrap();
-        assert!(hit.to_lowercase().ends_with("ep01.srt"));
-
-        let none = find_sibling_subtitle(dir.join("nope.mp4").to_string_lossy().to_string());
-        assert!(none.is_none());
+        assert_eq!(names, vec!["a.mp3", "b.mp4", "c.flac"]);
+        assert!(items[0].audio);
+        assert!(!items[1].audio);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

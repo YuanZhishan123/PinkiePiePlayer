@@ -7,3 +7,6 @@ src-tauri/gen/schemas/
 
 # WorkBuddy agent workspace data
 .workbuddy/
+
+src-tauri/resources/
+vendor/

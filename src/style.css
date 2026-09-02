@@ -18,7 +18,7 @@ html, body {
   padding: 0;
   height: 100%;
   overflow: hidden;
-  background: var(--bg);
+  background: transparent; /* 透出下层 mpv 视频子窗口 */
   color: var(--text);
   font-family: "Segoe UI Variable Display", "Segoe UI", "Microsoft YaHei UI",
     "PingFang SC", "Harmonious Sans SC", system-ui, sans-serif;
@@ -40,21 +40,14 @@ button svg { width: 22px; height: 22px; display: block; }
 
 .hidden { display: none !important; }
 
-#app { position: relative; height: 100vh; background: var(--bg); }
+#app { position: relative; height: 100vh; background: transparent; }
 
 /* ============ 视频舞台 ============ */
 #stage {
   position: absolute;
   inset: 0;
   overflow: hidden;
-  background: #000;
-}
-
-#video {
-  width: 100%;
-  height: 100%;
-  object-fit: contain; /* 默认适应窗口;可在控制栏切换为铺满 */
-  background: #000;
+  background: transparent; /* 视频由 mpv 子窗口在 WebView 之下渲染 */
 }
 
 /* 空状态 */
@@ -590,8 +583,8 @@ button svg { width: 22px; height: 22px; display: block; }
 }
 
 /* ============ 音频模式(纯音频文件) ============ */
-/* 音频无画面:视频元素置为透明(保持播放),显示唱片 + 均衡器 */
-#app.audio-mode #video { opacity: 0; }
+/* 音频无画面:mpv 视频子窗口被隐藏,舞台给不透明底色显示唱片 + 均衡器 */
+#app.audio-mode #stage { background: var(--bg); }
 #app.audio-mode #btn-fit { display: none; }
 
 #audio-art {
@@ -681,33 +674,6 @@ button svg { width: 22px; height: 22px; display: block; }
   0%, 100% { height: 22%; }
   50% { height: 100%; }
 }
-
-/* ============ 字幕(SRT) ============ */
-#subtitle {
-  position: absolute;
-  left: 50%;
-  bottom: 120px;
-  transform: translateX(-50%);
-  z-index: 30;
-  max-width: 82%;
-  padding: 7px 16px;
-  font-size: 21px;
-  line-height: 1.45;
-  text-align: center;
-  white-space: pre-line;
-  color: #fff;
-  text-shadow: 0 0 6px rgba(0, 0, 0, 0.9), 0 1px 3px rgba(0, 0, 0, 0.9);
-  background: rgba(8, 10, 15, 0.55);
-  border-radius: 10px;
-  opacity: 0;
-  transition: opacity 0.15s ease, bottom 0.28s ease;
-  pointer-events: none;
-}
-
-#subtitle.show { opacity: 1; }
-
-/* 控件隐藏时字幕下沉贴近底部(字幕是内容,不随 UI 隐藏) */
-#app.ui-idle #subtitle { bottom: 34px; }
 
 /* ============ UI 自动显隐 ============ */
 #titlebar,

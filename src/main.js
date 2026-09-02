@@ -1,4 +1,4 @@
-import { invoke, convertFileSrc } from '@tauri-apps/api/core';
+import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow, Window, PhysicalPosition, PhysicalSize, currentMonitor } from '@tauri-apps/api/window';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { emit, listen } from '@tauri-apps/api/event';
@@ -7,7 +7,6 @@ const $ = (id) => document.getElementById(id);
 
 /* ---------------- 元素 ---------------- */
 const app = $('app');
-const video = $('video');
 const stage = $('stage');
 const titleText = $('title-text');
 const emptyState = $('empty-state');
@@ -34,7 +33,6 @@ const bufferedBar = $('progress-buffered');
 const dot = $('progress-dot');
 const tip = $('progress-tip');
 const speedBadge = $('speed-badge');
-const subtitleEl = $('subtitle');
 const toastEl = $('toast');
 const win = getCurrentWindow();
 let playlistWin = null; // 播放列表窗口句柄(冷启动时窗口创建可能晚于本页 JS,改为惰性获取)
@@ -57,8 +55,10 @@ const IDLE_MS = 2600; // 鼠标静止多久后隐藏 UI
 const VOLUME_STEP = 0.05;
 const SEEK_STEP = 5; // ← 短按快退秒数
 const PLAYLIST_W = 300; // 播放列表窗口宽度(逻辑像素)
+const SUBPOS_SHOWN = 85; // 控制栏可见时字幕上移避让
+const SUBPOS_IDLE = 100; // UI 隐藏时字幕回到底部
 
-let playlist = []; // [{name, path}]
+let playlist = []; // [{name, path, audio}]
 let currentDir = null; // 当前播放列表对应的目录
 let currentIndex = -1;
 let playlistOpen = false;
@@ -73,6 +73,13 @@ let clickTimer = null; // 单击/双击消歧
 let idleTimer = null;
 let volumeFlashTimer = null;
 let toastTimer = null;
+
+// 播放状态(mpv 为唯一数据源,经事件同步)
+let mpvReady = false; // libmpv 加载成功
+let hasMedia = false; // 当前是否已加载媒体
+let playing = false;
+let duration = 0;
+let currentTime = 0;
 
 /* ---------------- 工具 ---------------- */
 function clamp(v, lo, hi) { return Math.min(hi, Math.max(lo, v)); }
@@ -107,7 +114,9 @@ function toast(msg) {
 
 /* ---------------- UI 显隐(鼠标静止自动隐藏) ---------------- */
 function wake() {
+  const wasIdle = app.classList.contains('ui-idle');
   app.classList.remove('ui-idle');
+  if (wasIdle && mpvReady) invoke('mpv_set_subpos', { v: SUBPOS_SHOWN }).catch(() => {});
   scheduleHide();
 }
 
@@ -115,8 +124,9 @@ function scheduleHide() {
   clearTimeout(idleTimer);
   idleTimer = setTimeout(() => {
     // 播放中、鼠标不在控件上、无弹出菜单时才隐藏
-    if (video.src && !video.paused && !uiHovered && !menuOpen && !seeking) {
+    if (hasMedia && playing && !uiHovered && !menuOpen && !seeking) {
       app.classList.add('ui-idle');
+      if (mpvReady) invoke('mpv_set_subpos', { v: SUBPOS_IDLE }).catch(() => {});
     } else {
       scheduleHide();
     }
@@ -125,8 +135,6 @@ function scheduleHide() {
 
 window.addEventListener('mousemove', wake);
 
-// 窗口模式:鼠标移出窗口时立即隐藏 UI,移回时立即恢复
-// (全屏不适用;菜单展开/拖动进度条中不隐藏)
 document.documentElement.addEventListener('mouseleave', () => {
   // 按住画面后鼠标移出窗口:立即开始窗口拖动
   // (否则贴着窗口边缘按下时,向外移不足 4px 阈值就丢失事件,永远无法触发拖动)
@@ -136,10 +144,10 @@ document.documentElement.addEventListener('mouseleave', () => {
     win.startDragging().catch(() => {});
   }
   // 窗口模式:鼠标移出窗口时立即隐藏 UI
-  // (全屏不适用;菜单展开/拖动进度条中不隐藏)
-  if (isFullscreen || !video.src || menuOpen || seeking) return;
+  if (isFullscreen || !hasMedia || menuOpen || seeking) return;
   clearTimeout(idleTimer);
   app.classList.add('ui-idle');
+  if (mpvReady) invoke('mpv_set_subpos', { v: SUBPOS_IDLE }).catch(() => {});
 });
 
 document.documentElement.addEventListener('mouseenter', wake);
@@ -150,53 +158,123 @@ for (const el of [document.querySelector('#button-bar'), document.querySelector(
   el.addEventListener('mouseleave', () => { uiHovered = false; });
 }
 
-/* ---------------- 播放控制 ---------------- */
+/* ---------------- 播放控制(mpv) ---------------- */
 const ICON_PLAY = '<svg viewBox="0 0 24 24"><path d="M8 5.2v13.6L19 12z" fill="currentColor"/></svg>';
 const ICON_PAUSE = '<svg viewBox="0 0 24 24"><path d="M7 5h3.4v14H7zM13.6 5H17v14h-3.4z" fill="currentColor"/></svg>';
 
-function togglePlay() {
-  if (!video.src) return;
-  if (video.paused) video.play().catch(() => {});
-  else video.pause();
+function setPlayingUI(p) {
+  playing = p;
+  btnPlay.innerHTML = p ? ICON_PAUSE : ICON_PLAY;
+  btnPlay.title = p ? '暂停(空格)' : '播放(空格)';
+  app.classList.toggle('is-playing', p);
 }
 
-video.addEventListener('play', () => { btnPlay.innerHTML = ICON_PAUSE; btnPlay.title = '暂停(空格)'; app.classList.add('is-playing'); });
-video.addEventListener('pause', () => { btnPlay.innerHTML = ICON_PLAY; btnPlay.title = '播放(空格)'; app.classList.remove('is-playing'); });
-video.addEventListener('ended', () => { app.classList.remove('is-playing'); playNext(); });
-
-// loadedmetadata 后判断是否为纯音频(无视频轨):audioWidth 有值而 videoWidth 为 0
-video.addEventListener('loadedmetadata', () => {
-  const audioOnly = video.videoWidth === 0;
-  app.classList.toggle('audio-mode', audioOnly);
-});
+function togglePlay() {
+  if (!mpvReady || !hasMedia) return;
+  invoke('mpv_set_pause', { paused: playing }).catch(() => {});
+  setPlayingUI(playing ? false : true); // 乐观更新,mpv 事件随后校准
+  if (!playing) wake();
+}
 
 btnPlay.addEventListener('click', togglePlay);
 
 // 点击画面切换播放/暂停;双击切换全屏(单击延迟消歧)
-video.addEventListener('click', () => {
+// (mpv 视频渲染在 WebView 之下,画面区域的事件全部由 stage 接收)
+stage.addEventListener('click', (e) => {
   if (dragged) { dragged = false; return; } // 刚拖完窗口,忽略这次 click
+  if (e.target.closest('button, input') || app.classList.contains('drag-over')) return;
   if (clickTimer) return;
   clickTimer = setTimeout(() => { clickTimer = null; togglePlay(); }, 220);
 });
-video.addEventListener('dblclick', () => {
-  if (dragged) return;
+stage.addEventListener('dblclick', (e) => {
+  if (dragged || e.target.closest('button, input')) return;
   clearTimeout(clickTimer);
   clickTimer = null;
   toggleFullscreen();
 });
+
+/* ---------------- mpv 事件同步 ---------------- */
+listen('mpv://ready', () => {
+  mpvReady = true;
+  // mpv 默认属性与用户偏好对齐(localStorage 记忆)
+  invoke('mpv_set_volume', { v: Math.round(volume * 100) }).catch(() => {});
+  invoke('mpv_set_speed', { v: rate }).catch(() => {});
+  invoke('mpv_set_panscan', { v: fitMode === 'cover' ? 1 : 0 }).catch(() => {});
+});
+
+listen('mpv://unavailable', (e) => {
+  toast(`解码组件缺失:${e.payload}`);
+});
+
+listen('mpv://prop', (e) => {
+  const { name, flag, num } = e.payload;
+  switch (name) {
+    case 'pause':
+      setPlayingUI(!flag);
+      break;
+    case 'duration':
+      if (isFinite(num)) {
+        duration = num;
+        timeTotal.textContent = fmtTime(duration);
+        updateProgressUI();
+      }
+      break;
+    case 'demuxer-cache-time':
+      if (isFinite(num) && duration > 0) {
+        bufferedBar.style.width = clamp(num / duration, 0, 1) * 100 + '%';
+      }
+      break;
+    case 'sub-visibility':
+      btnSubtitle.classList.toggle('active', !!flag);
+      btnSubtitle.title = flag ? '关闭字幕' : '显示字幕';
+      break;
+  }
+});
+
+listen('mpv://file-loaded', (e) => {
+  const audioOnly = !e.payload.hasVideo;
+  app.classList.toggle('audio-mode', audioOnly);
+  hasMedia = true;
+  playing = true;
+  setPlayingUI(true);
+  wake();
+});
+
+listen('mpv://end-file', (e) => {
+  const reason = e.payload.reason;
+  if (reason === 0) {
+    playNext(); // 自然播完 → 循环下一个
+  } else if (reason === 4) {
+    toast('无法播放此文件,可能是不支持的格式');
+  }
+  // reason === 2 (STOP) 为主动切换文件,忽略
+});
+
+// 进度/时间轮询(mpv 不推送高频 time-pos,低频拉取)
+setInterval(async () => {
+  if (!mpvReady || !hasMedia || seeking) return;
+  try {
+    const t = await invoke('mpv_get_timepos');
+    if (t != null) {
+      currentTime = t;
+      timeCurrent.textContent = fmtTime(t);
+      updateProgressUI();
+    }
+  } catch { /* ignore */ }
+}, 250);
 
 /* ---------------- 按住画面拖动窗口 ---------------- */
 let pressPos = null; // mousedown 时的屏幕坐标
 let dragged = false; // 本次按压是否已转为窗口拖动
 
 stage.addEventListener('mousedown', (e) => {
-  // 空状态(无视频)时同样允许按住画面拖动窗口;按钮等交互控件除外
+  // 空状态(无媒体)时同样允许按住画面拖动窗口;按钮等交互控件除外
   if (e.button !== 0 || e.target.closest('button, input')) return;
   pressPos = { x: e.screenX, y: e.screenY };
   dragged = false;
 });
 
-// 顶部标题栏:按住空白处(标题文字/窗口按钮以外)直接拖动窗口
+// 顶部标题栏:按住空白处(窗口按钮以外)直接拖动窗口
 $('titlebar').addEventListener('mousedown', (e) => {
   if (e.button !== 0 || e.target.closest('button')) return;
   win.startDragging().catch(() => {});
@@ -216,24 +294,20 @@ window.addEventListener('mousemove', (e) => {
 
 window.addEventListener('mouseup', () => { pressPos = null; });
 
-/* ---------------- 打开视频 ---------------- */
-let mediaSeq = 0; // 打开文件的序号,防止快速切换时异步字幕加载串台
-
+/* ---------------- 打开媒体 ---------------- */
 async function openVideo(path, { fromPlaylist = false } = {}) {
   stopBoost();
-  const seq = ++mediaSeq;
-  clearSubtitle(true); // 换片先清字幕
-  video.src = convertFileSrc(path);
+  const ok = await invoke('mpv_loadfile', { path }).catch(() => false);
+  if (ok === false) return;
   titleText.textContent = fileName(path);
   emptyState.classList.add('hidden');
-  video.playbackRate = rate;
-  video.play().catch(() => {});
+  duration = 0;
+  currentTime = 0;
+  timeTotal.textContent = '00:00';
+  timeCurrent.textContent = '00:00';
+  playedBar.style.width = '0%';
+  bufferedBar.style.width = '0%';
   wake();
-
-  // 自动加载同名 SRT 字幕(如 ep01.mp4 ↔ ep01.srt)
-  invoke('find_sibling_subtitle', { path })
-    .then((p) => { if (p && !subtitleCues && seq === mediaSeq) loadSubtitle(p); })
-    .catch(() => {});
 
   const dir = dirname(path);
   if (!fromPlaylist || dir !== currentDir) {
@@ -310,31 +384,10 @@ getCurrentWebview().onDragDropEvent((ev) => {
 
 /* ---------------- 进度条 ---------------- */
 function updateProgressUI() {
-  const d = video.duration || 0;
-  const r = d ? video.currentTime / d : 0;
+  const r = duration > 0 ? clamp(currentTime / duration, 0, 1) : 0;
   playedBar.style.width = (r * 100) + '%';
   dot.style.left = (r * 100) + '%';
 }
-
-video.addEventListener('timeupdate', () => {
-  timeCurrent.textContent = fmtTime(video.currentTime);
-  if (!seeking) updateProgressUI();
-  updateSubtitle(video.currentTime);
-});
-
-video.addEventListener('progress', () => {
-  try {
-    if (video.buffered.length && video.duration) {
-      const end = video.buffered.end(video.buffered.length - 1);
-      bufferedBar.style.width = (end / video.duration * 100) + '%';
-    }
-  } catch { /* ignore */ }
-});
-
-video.addEventListener('loadedmetadata', () => {
-  timeTotal.textContent = fmtTime(video.duration);
-  updateProgressUI();
-});
 
 function ratioFromEvent(e) {
   const rect = track.getBoundingClientRect();
@@ -344,17 +397,17 @@ function ratioFromEvent(e) {
 function moveTip(e) {
   const rect = track.getBoundingClientRect();
   const ratio = ratioFromEvent(e);
-  tip.textContent = fmtTime(ratio * (video.duration || 0));
+  tip.textContent = fmtTime(ratio * duration);
   tip.style.left = (ratio * rect.width) + 'px';
   tip.classList.add('show');
 }
 
 track.addEventListener('pointerdown', (e) => {
-  if (!video.duration) return;
+  if (!duration) return;
   seeking = true;
   track.setPointerCapture(e.pointerId);
   const r = ratioFromEvent(e);
-  video.currentTime = r * video.duration;
+  currentTime = r * duration;
   updateProgressUI();
   moveTip(e);
   wake();
@@ -362,14 +415,21 @@ track.addEventListener('pointerdown', (e) => {
 
 track.addEventListener('pointermove', (e) => {
   moveTip(e);
-  if (seeking && video.duration) {
-    const r = ratioFromEvent(e);
-    video.currentTime = r * video.duration;
+  if (seeking && duration) {
+    currentTime = ratioFromEvent(e) * duration;
     updateProgressUI();
   }
 });
 
-track.addEventListener('pointerup', () => { seeking = false; });
+track.addEventListener('pointerup', (e) => {
+  if (seeking && duration && mpvReady) {
+    const t = ratioFromEvent(e) * duration;
+    invoke('mpv_seek', { t }).catch(() => {});
+    timeCurrent.textContent = fmtTime(t);
+  }
+  seeking = false;
+});
+track.addEventListener('pointercancel', () => { seeking = false; });
 track.addEventListener('pointerleave', () => {
   if (!seeking) tip.classList.remove('show');
 });
@@ -380,8 +440,7 @@ let volumeMutedByUser = false;
 
 function setVolume(v, { flash = true, persist = true } = {}) {
   volume = clamp(v, 0, 1);
-  video.volume = volume;
-  if (volume > 0 && video.muted && !volumeMutedByUser) video.muted = false;
+  if (mpvReady) invoke('mpv_set_volume', { v: Math.round(volume * 100) }).catch(() => {});
   volumeSlider.value = Math.round(volume * 100);
   volumeSlider.style.setProperty('--fill', Math.round(volume * 100) + '%');
   volumeNum.textContent = String(Math.round(volume * 100));
@@ -397,19 +456,20 @@ function flashVolume() {
 }
 
 function updateVolumeIcon() {
-  const muted = video.muted || volume === 0;
+  const muted = (volumeMutedByUser || volume === 0) && mpvReady;
   btnVolume.classList.toggle('muted', muted);
   btnVolume.classList.toggle('low', !muted && volume < 0.5);
 }
 
 btnVolume.addEventListener('click', () => {
-  volumeMutedByUser = !video.muted;
-  video.muted = volumeMutedByUser;
+  volumeMutedByUser = !volumeMutedByUser;
+  if (mpvReady) invoke('mpv_set_mute', { m: volumeMutedByUser }).catch(() => {});
   updateVolumeIcon();
 });
 
 volumeSlider.addEventListener('input', () => {
   volumeMutedByUser = false;
+  if (mpvReady) invoke('mpv_set_mute', { m: false }).catch(() => {});
   setVolume(volumeSlider.value / 100, { flash: false });
 });
 
@@ -418,13 +478,13 @@ window.addEventListener('keydown', (e) => {
   if (e.key === 'ArrowUp') {
     e.preventDefault();
     volumeMutedByUser = false;
-    video.muted = false;
+    if (mpvReady) invoke('mpv_set_mute', { m: false }).catch(() => {});
     setVolume(volume + VOLUME_STEP);
     toast(`音量 ${Math.round(volume * 100)}%`);
   } else if (e.key === 'ArrowDown') {
     e.preventDefault();
     volumeMutedByUser = false;
-    video.muted = false;
+    if (mpvReady) invoke('mpv_set_mute', { m: false }).catch(() => {});
     setVolume(volume - VOLUME_STEP);
     toast(`音量 ${Math.round(volume * 100)}%`);
   }
@@ -433,7 +493,7 @@ window.addEventListener('keydown', (e) => {
 /* ---------------- 倍速 ---------------- */
 function setRate(r, { persist = true } = {}) {
   rate = clamp(r, 0.25, 4);
-  if (boostRate === null) video.playbackRate = rate;
+  if (boostRate === null && mpvReady) invoke('mpv_set_speed', { v: rate }).catch(() => {});
   btnSpeed.querySelector('span').textContent = fmtRate(rate);
   if (persist) localStorage.setItem('vp-rate', String(rate));
   for (const item of speedMenuItems.children) {
@@ -470,15 +530,15 @@ document.addEventListener('click', (e) => {
 
 // 长按 → 临时三倍速
 function startBoost() {
-  if (!video.src || boostRate !== null) return;
-  boostRate = video.playbackRate;
-  video.playbackRate = 3;
+  if (!mpvReady || !hasMedia || boostRate !== null) return;
+  boostRate = rate;
+  invoke('mpv_set_speed', { v: 3 }).catch(() => {});
   speedBadge.classList.add('show');
 }
 
 function stopBoost() {
   if (boostRate === null) return;
-  video.playbackRate = boostRate;
+  invoke('mpv_set_speed', { v: boostRate }).catch(() => {});
   boostRate = null;
   speedBadge.classList.remove('show');
 }
@@ -502,8 +562,8 @@ window.addEventListener('keydown', (e) => {
       break;
     case 'ArrowLeft':
       e.preventDefault();
-      if (video.src) {
-        video.currentTime = Math.max(0, video.currentTime - SEEK_STEP);
+      if (mpvReady && hasMedia) {
+        invoke('mpv_seek_rel', { d: -SEEK_STEP }).catch(() => {});
         toast(`-${SEEK_STEP}s`);
         wake();
       }
@@ -533,7 +593,7 @@ window.addEventListener('blur', stopBoost);
 let fitMode = localStorage.getItem('vp-fit') === 'cover' ? 'cover' : 'contain';
 
 function applyFit() {
-  video.style.objectFit = fitMode;
+  if (mpvReady) invoke('mpv_set_panscan', { v: fitMode === 'cover' ? 1 : 0 }).catch(() => {});
   btnFit.classList.toggle('cover', fitMode === 'cover');
   btnFit.title = fitMode === 'cover' ? '画面填充:铺满窗口(点击切换)' : '画面填充:适应窗口(点击切换)';
 }
@@ -650,114 +710,22 @@ win.onFocusChanged(async ({ payload: focused }) => {
 
 // 主窗口移动/缩放时,播放列表窗口由 Rust 原生事件实时同步(见 main.rs)
 
-/* ---------------- 字幕(SRT) ---------------- */
-let subtitleCues = null; // null = 未加载字幕;[{start,end,text}] 按开始时间排序
-
-const SRT_TIME_RE = /(\d{1,2}):(\d{2}):(\d{2})[,.](\d{1,3})\s*-->\s*(\d{1,2}):(\d{2}):(\d{2})[,.](\d{1,3})/;
-
-function srtSeconds(h, m, s, ms) {
-  return (+h) * 3600 + (+m) * 60 + (+s) + (+String(ms).padEnd(3, '0')) / 1000;
-}
-
-function parseSrt(text) {
-  const cues = [];
-  for (const block of text.replace(/\r\n?/g, '\n').split(/\n{2,}/)) {
-    const m = block.match(SRT_TIME_RE);
-    if (!m) continue;
-    const lines = block.split('\n');
-    const ti = lines.findIndex((l) => SRT_TIME_RE.test(l));
-    const content = lines.slice(ti + 1).join('\n')
-      .replace(/\{\\[^}]*\}/g, '') // {\an8} 等样式标签
-      .replace(/<[^>]+>/g, '') // <i>、<font> 等标签
-      .trim();
-    if (content) {
-      cues.push({
-        start: srtSeconds(m[1], m[2], m[3], m[4]),
-        end: srtSeconds(m[5], m[6], m[7], m[8]),
-        text: content,
-      });
-    }
-  }
-  cues.sort((a, b) => a.start - b.start);
-  return cues;
-}
-
-// 字幕文件编码:优先严格 UTF-8,失败回落 GBK(Windows 中文环境常见),兼容 UTF-16 BOM
-function decodeSubtitleBytes(buf) {
-  const u8 = new Uint8Array(buf);
-  try {
-    if (u8[0] === 0xff && u8[1] === 0xfe) return new TextDecoder('utf-16le').decode(u8);
-    if (u8[0] === 0xfe && u8[1] === 0xff) return new TextDecoder('utf-16be').decode(u8);
-    return new TextDecoder('utf-8', { fatal: true }).decode(u8);
-  } catch {
-    try { return new TextDecoder('gbk').decode(u8); }
-    catch { return new TextDecoder('utf-8').decode(u8); }
-  }
-}
-
-async function loadSubtitle(path) {
-  try {
-    const res = await fetch(convertFileSrc(path));
-    if (!res.ok) throw new Error('fetch failed');
-    const cues = parseSrt(decodeSubtitleBytes(await res.arrayBuffer()));
-    if (!cues.length) { toast('字幕文件解析失败'); return false; }
-    subtitleCues = cues;
-    btnSubtitle.classList.add('active');
-    btnSubtitle.title = '关闭字幕';
-    toast(`字幕已加载(共 ${cues.length} 条)`);
-    updateSubtitle(video.currentTime);
-    return true;
-  } catch {
-    toast('无法读取字幕文件');
-    return false;
-  }
-}
-
-function clearSubtitle(silent = false) {
-  subtitleCues = null;
-  subtitleEl.classList.remove('show');
-  btnSubtitle.classList.remove('active');
-  btnSubtitle.title = '加载字幕(SRT)';
-  if (!silent) toast('字幕已关闭');
-}
-
-// 二分定位 + 小范围回溯,收集覆盖 t 的 cue(重叠字幕合并显示)
-function activeSubtitleText(t) {
-  const cues = subtitleCues;
-  if (!cues) return '';
-  let lo = 0, hi = cues.length - 1, hit = -1;
-  while (lo <= hi) {
-    const mid = (lo + hi) >> 1;
-    if (cues[mid].start <= t) { hit = mid; lo = mid + 1; } else hi = mid - 1;
-  }
-  const parts = [];
-  for (let i = hit; i >= 0 && cues[i].start > t - 30; i--) {
-    if (cues[i].end > t) parts.unshift(cues[i].text);
-  }
-  for (let i = hit + 1; i < cues.length && cues[i].start <= t; i++) {
-    if (cues[i].end > t) parts.push(cues[i].text);
-  }
-  return parts.join('\n');
-}
-
-function updateSubtitle(t) {
-  if (!subtitleCues) return;
-  const text = activeSubtitleText(t);
-  if (text) {
-    if (subtitleEl.textContent !== text) subtitleEl.textContent = text;
-    subtitleEl.classList.add('show');
-  } else {
-    subtitleEl.classList.remove('show');
-  }
-}
-
+/* ---------------- 字幕(mpv 原生渲染,支持 SRT/ASS/SSA/VTT) ---------------- */
 btnSubtitle.addEventListener('click', async () => {
-  if (subtitleCues) { clearSubtitle(); return; }
-  const p = await invoke('open_subtitle_dialog');
-  if (p) loadSubtitle(p);
+  if (!mpvReady || !hasMedia) return;
+  try {
+    if (await invoke('mpv_has_sub')) {
+      // 已有字幕轨(含自动加载的同名字幕):切换可见性
+      await invoke('mpv_toggle_sub');
+    } else {
+      const p = await invoke('open_subtitle_dialog');
+      if (p) {
+        await invoke('mpv_sub_add', { path: p });
+        toast('字幕已加载');
+      }
+    }
+  } catch { /* ignore */ }
 });
-
-video.addEventListener('seeked', () => updateSubtitle(video.currentTime));
 
 /* ---------------- 窗口控制 ---------------- */
 $('btn-minimize').addEventListener('click', () => win.minimize());
@@ -766,13 +734,6 @@ $('btn-close').addEventListener('click', () => win.close());
 // 按钮点击后失焦,避免空格误触发
 document.querySelectorAll('button').forEach((b) => {
   b.addEventListener('click', () => b.blur());
-});
-
-/* ---------------- 视频错误处理 ---------------- */
-video.addEventListener('error', () => {
-  if (video.src && video.src !== location.href) {
-    toast('无法播放此文件,可能是不支持的编码格式');
-  }
 });
 
 /* ---------------- 初始化 ---------------- */
