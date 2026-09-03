@@ -238,6 +238,8 @@ listen('mpv://file-loaded', (e) => {
   playing = true;
   setPlayingUI(true);
   wake();
+  // 等首帧短暂呈现后再撤掉加载底色,避免移除瞬间又透出空白
+  setTimeout(() => stage.classList.remove('loading'), 160);
 });
 
 listen('mpv://end-file', (e) => {
@@ -246,6 +248,7 @@ listen('mpv://end-file', (e) => {
     playNext(); // 自然播完 → 循环下一个
   } else if (reason === 4) {
     toast('无法播放此文件,可能是不支持的格式');
+    stage.classList.remove('loading'); // 加载失败:撤掉占位底色,回到可交互状态
   }
   // reason === 2 (STOP) 为主动切换文件,忽略
 });
@@ -300,10 +303,30 @@ window.addEventListener('mousemove', (e) => {
 window.addEventListener('mouseup', () => { pressPos = null; });
 
 /* ---------------- 打开媒体 ---------------- */
+// mpv 尚未就绪(冷启动竞态)时等待,避免 invoke 静默失败导致“拖入/打开无反应”
+function waitMpvReady(timeout = 5000) {
+  if (mpvReady) return Promise.resolve();
+  return new Promise((resolve) => {
+    const t0 = performance.now();
+    const iv = setInterval(() => {
+      if (mpvReady || performance.now() - t0 > timeout) {
+        clearInterval(iv);
+        resolve();
+      }
+    }, 50);
+  });
+}
+
 async function openVideo(path, { fromPlaylist = false } = {}) {
   stopBoost();
+  await waitMpvReady();
   const ok = await invoke('mpv_loadfile', { path }).catch(() => false);
-  if (ok === false) return;
+  if (ok === false) {
+    toast('无法打开文件,请稍后重试');
+    return;
+  }
+  // 隐藏 emptyState 后、mpv 首帧渲染前:用不透明底色占位,防止透出桌面
+  stage.classList.add('loading');
   titleText.textContent = fileName(path);
   emptyState.classList.add('hidden');
   duration = 0;

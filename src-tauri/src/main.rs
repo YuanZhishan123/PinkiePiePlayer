@@ -160,6 +160,10 @@ fn get_startup_file(state: tauri::State<StartupFile>) -> Option<String> {
 
 #[tauri::command]
 fn mpv_loadfile(path: String) -> Result<(), String> {
+    // 加载期间(首帧渲染前)先兜底显示黑色视频子窗口,
+    // 与前端 #stage.loading 底色双保险,避免透明窗口透出桌面
+    #[cfg(target_os = "windows")]
+    video_child::force_shown_bottom();
     // 异步执行:大文件打开/建索引不能阻塞 invoke
     mpv::command_async(&["loadfile", &path])
 }
@@ -419,6 +423,18 @@ mod video_child {
         if !super::VIDEO_SHOWN.load(Ordering::Relaxed) {
             return;
         }
+        if let Some(child) = child() {
+            unsafe {
+                ShowWindow(child, SW_SHOW);
+                SetWindowPos(child, 1 as HWND, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            }
+        }
+    }
+
+    /// 加载文件期间兜底显示黑色子窗口(不检查 VIDEO_SHOWN):
+    /// loadfile 处理中与首帧渲染前,WebView 侧仅靠前端 loading 底色占位,
+    /// 这里保证底层子窗口也在,双保险防止透明窗口透出桌面。
+    pub fn force_shown_bottom() {
         if let Some(child) = child() {
             unsafe {
                 ShowWindow(child, SW_SHOW);

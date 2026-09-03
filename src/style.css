@@ -583,6 +583,10 @@ button svg { width: 22px; height: 22px; display: block; }
 }
 
 /* ============ 音频模式(纯音频文件) ============ */
+/* 加载中(emptyState 隐藏后、mpv 首帧渲染前):舞台用不透明底色,
+   避免透明 WebView 直接透出桌面/黑窗造成“短暂透明”闪屏 */
+#stage.loading { background: var(--bg); }
+
 /* 音频无画面:mpv 视频子窗口被隐藏,舞台给不透明底色显示唱片 + 均衡器 */
 #app.audio-mode #stage { background: var(--bg); }
 #app.audio-mode #btn-fit { display: none; }
